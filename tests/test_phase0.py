@@ -1,14 +1,10 @@
-"""Phase 0 integration tests — all endpoints without agent wiring."""
+"""Phase 0 integration tests — foundation endpoints (agent mocked in Phase 1)."""
 
 from __future__ import annotations
 
 import pytest
 from httpx import AsyncClient
 
-from app.domain.schemas import SeedSummary
-
-# conftest provides: app, client, reset_db as fixtures
-# conftest defines auth_headers() as a plain function — import it here
 from conftest import auth_headers
 
 
@@ -98,7 +94,7 @@ async def test_post_and_list_messages(client: AsyncClient):
     resp = await client.post("/v1/copilot/sessions", json={}, headers=headers)
     sid = resp.json()["id"]
 
-    # Post two messages
+    # Post two turns (each produces user + assistant)
     await client.post(
         f"/v1/copilot/sessions/{sid}/messages",
         json={"content": "What is today's revenue?"},
@@ -110,15 +106,19 @@ async def test_post_and_list_messages(client: AsyncClient):
         headers=headers,
     )
 
-    # List
+    # List — 2 user + 2 assistant
     resp = await client.get(f"/v1/copilot/sessions/{sid}/messages", headers=headers)
     assert resp.status_code == 200
     body = resp.json()
     assert body["session_id"] == sid
-    assert len(body["messages"]) == 2
+    assert len(body["messages"]) == 4
     assert body["messages"][0]["role"] == "user"
     assert body["messages"][0]["content"]["text"] == "What is today's revenue?"
-    assert body["messages"][1]["content"]["text"] == "List trial users of badminton"
+    assert body["messages"][1]["role"] == "assistant"
+    assert "Mock answer" in body["messages"][1]["content"]["text"]
+    assert body["messages"][2]["role"] == "user"
+    assert body["messages"][2]["content"]["text"] == "List trial users of badminton"
+    assert body["messages"][3]["role"] == "assistant"
 
 
 @pytest.mark.asyncio

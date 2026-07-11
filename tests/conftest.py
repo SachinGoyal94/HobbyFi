@@ -14,14 +14,30 @@ from httpx import ASGITransport, AsyncClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "apps" / "copilot-api"))
 
 # Point .env to the project root so Settings finds GEMINI_API_KEY
-os.environ.setdefault(
-    "GEMINI_API_KEY", "test-fixture-key"
-)
+os.environ.setdefault("GEMINI_API_KEY", "test-fixture-key")
 
-from app.db.session import AsyncSessionLocal, engine, settings  # noqa: E402
+from app.db.session import AsyncSessionLocal, engine  # noqa: E402
 from app.domain.models import Base  # noqa: E402
 from app.domain.seed import seed_mock_data  # noqa: E402
 from app.main import create_app  # noqa: E402
+from app.services import chat_service  # noqa: E402
+
+
+def _mock_agent_runner(*, user_message: str, ctx, history=None) -> dict:
+    """Deterministic agent stub for API tests (no real Gemini / CrewAI)."""
+    return {
+        "text": f"Mock answer for: {user_message}",
+        "blocks": [],
+        "tool_traces": [],
+    }
+
+
+@pytest.fixture(autouse=True)
+def mock_agent():
+    """Replace agent runner for every test; restore after."""
+    chat_service.set_agent_runner(_mock_agent_runner)
+    yield
+    chat_service.set_agent_runner(None)
 
 
 @pytest.fixture(scope="session")
