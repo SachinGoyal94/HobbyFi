@@ -49,7 +49,7 @@ class ChatSessionResponse(BaseModel):
 
 
 class ChatMessageCreate(BaseModel):
-    """Phase 0: store a user message only. Agent reply lands in Phase 1."""
+    """User message for a chat turn. Agent reply is generated server-side."""
 
     content: str = Field(..., min_length=1, max_length=16_000)
 
@@ -67,6 +67,14 @@ class ChatMessageResponse(BaseModel):
 class ChatMessageListResponse(BaseModel):
     session_id: str
     messages: list[ChatMessageResponse]
+
+
+class ChatTurnResponse(BaseModel):
+    """Result of POST /messages: user message + assistant reply with UI blocks."""
+
+    session_id: str
+    user_message: ChatMessageResponse
+    assistant_message: ChatMessageResponse
 
 
 # --- Health / meta ---
