@@ -4,16 +4,17 @@ from datetime import date, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func
 
-from app.domain.models import Game, RevenueDaily
+from app.domain.models import Game, RevenueDaily, AppUser, Membership
 
 
 class RevenueRepo:
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    def get_revenue(
+    async def get_revenue(
         self,
         *,
         vendor_id: str,
@@ -33,7 +34,7 @@ class RevenueRepo:
         game_id: str | None = None
         game_name: str | None = None
         if game_slug:
-            game = self._session.scalar(
+            game = await self._session.scalar(
                 select(Game).where(Game.vendor_id == vendor_id, Game.slug == game_slug)
             )
             if game is None:
@@ -55,7 +56,7 @@ class RevenueRepo:
             stmt = stmt.where(RevenueDaily.game_id == game_id)
         else:
             # Prefer all-games rollup (game_id IS NULL); fall back to per-game rows
-            rollup = self._session.scalar(
+            rollup = await self._session.scalar(
                 select(RevenueDaily).where(
                     RevenueDaily.vendor_id == vendor_id,
                     RevenueDaily.day == day,
@@ -78,7 +79,7 @@ class RevenueRepo:
                     "rows": [_row_dict(rollup)],
                 }
 
-        rows = self._session.scalars(stmt).all()
+        rows = (await self._session.scalars(stmt)).all()
         if not rows:
             return {
                 "day": day.isoformat(),
@@ -113,7 +114,7 @@ class RevenueRepo:
             "rows": [_row_dict(r) for r in rows],
         }
 
-    def vendor_summary(self, *, vendor_id: str, day: date | None = None, timezone_name: str = "UTC") -> dict:
+    async def vendor_summary(self, *, vendor_id: str, day: date | None = None, timezone_name: str = "UTC") -> dict:
         if day is None:
             try:
                 tz = ZoneInfo(timezone_name)
@@ -123,19 +124,16 @@ class RevenueRepo:
 
             day = datetime.now(timezone.utc).astimezone(tz).date()
 
-        from app.domain.models import AppUser, Membership
-        from sqlalchemy import func
-
         active_users = int(
-            self._session.scalar(
+            (await self._session.scalar(
                 select(func.count())
                 .select_from(AppUser)
                 .where(AppUser.vendor_id == vendor_id, AppUser.status == "active")
-            )
+            ))
             or 0
         )
         active_trials = int(
-            self._session.scalar(
+            (await self._session.scalar(
                 select(func.count())
                 .select_from(Membership)
                 .where(
@@ -143,16 +141,16 @@ class RevenueRepo:
                     Membership.plan == "trial",
                     Membership.status == "active",
                 )
-            )
+            ))
             or 0
         )
         game_count = int(
-            self._session.scalar(
+            (await self._session.scalar(
                 select(func.count()).select_from(Game).where(Game.vendor_id == vendor_id)
-            )
+            ))
             or 0
         )
-        rev = self.get_revenue(vendor_id=vendor_id, day=day, timezone_name=timezone_name)
+        rev = await self.get_revenue(vendor_id=vendor_id, day=day, timezone_name=timezone_name)
         return {
             "day": day.isoformat(),
             "active_users": active_users,

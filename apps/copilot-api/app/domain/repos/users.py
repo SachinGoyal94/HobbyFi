@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 from sqlalchemy import or_, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.domain.models import AppUser, Game, Membership
 
 
 class UsersRepo:
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    def search(
+    async def search(
         self,
         *,
         vendor_id: str,
@@ -22,7 +23,7 @@ class UsersRepo:
             return []
         limit = max(1, min(limit, 50))
         pattern = f"%{q}%"
-        rows = self._session.scalars(
+        rows = (await self._session.scalars(
             select(AppUser)
             .where(
                 AppUser.vendor_id == vendor_id,
@@ -34,11 +35,11 @@ class UsersRepo:
             )
             .order_by(AppUser.id.asc())
             .limit(limit)
-        ).all()
+        )).all()
         return [_user_dict(u) for u in rows]
 
-    def get_user(self, *, vendor_id: str, user_id: str) -> dict | None:
-        user = self._session.scalar(
+    async def get_user(self, *, vendor_id: str, user_id: str) -> dict | None:
+        user = await self._session.scalar(
             select(AppUser)
             .options(selectinload(AppUser.memberships).selectinload(Membership.game))
             .where(AppUser.vendor_id == vendor_id, AppUser.id == user_id)

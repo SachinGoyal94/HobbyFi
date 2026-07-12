@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.domain.models import AppUser, Game, Membership
 
 
 class MembershipsRepo:
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    def list_trials(
+    async def list_trials(
         self,
         *,
         vendor_id: str,
@@ -42,10 +44,9 @@ class MembershipsRepo:
                 Game.slug == game_slug,
             )
 
-        rows = self._session.scalars(stmt).all()
+        rows = (await self._session.scalars(stmt)).all()
         results: list[dict] = []
         for m in rows:
-            # Prefer currently-active trials; still include if trial_ends_at is null
             if m.trial_ends_at is not None:
                 ends = m.trial_ends_at
                 if ends.tzinfo is None:
@@ -69,19 +70,19 @@ class MembershipsRepo:
             )
         return results[:limit]
 
-    def get_membership(
+    async def get_membership(
         self,
         *,
         vendor_id: str,
         user_id: str,
         game_slug: str,
     ) -> dict | None:
-        game = self._session.scalar(
+        game = await self._session.scalar(
             select(Game).where(Game.vendor_id == vendor_id, Game.slug == game_slug)
         )
         if game is None:
             return None
-        m = self._session.scalar(
+        m = await self._session.scalar(
             select(Membership)
             .options(selectinload(Membership.user), selectinload(Membership.game))
             .where(
