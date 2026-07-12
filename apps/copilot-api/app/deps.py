@@ -75,7 +75,7 @@ async def get_vendor_context(
             detail=f"Role mismatch: header says {role}, DB has {user.role}",
         )
 
-    return VendorContext(
+    ctx = VendorContext(
         vendor_id=vendor.id,
         vendor_user_id=user.id,
         email=user.email,
@@ -83,6 +83,9 @@ async def get_vendor_context(
         timezone=vendor.timezone,
         vendor_name=vendor.name,
     )
+    # Store in request.state for rate limiter and other middleware
+    request.state.vendor_context = ctx
+    return ctx
 
 
 _VALID_ROLES: set[str] = {"owner", "admin", "support", "viewer"}

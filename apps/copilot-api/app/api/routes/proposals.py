@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.rate_limiter import rate_limit_dependency
 from app.db.session import get_db
 from app.deps import get_vendor_context, require_role
 from app.domain.schemas import (
@@ -33,6 +34,7 @@ async def list_proposals(
     status: str | None = None,
     ctx: VendorContext = Depends(get_vendor_context),
     db: AsyncSession = Depends(get_db),
+    _rl: None = Depends(rate_limit_dependency),
 ) -> ProposalListResponse:
     """List this vendor's proposals, optionally filtered by status."""
     proposals = await approval_service.list_proposals(
@@ -49,6 +51,7 @@ async def get_proposal(
     proposal_id: str,
     ctx: VendorContext = Depends(get_vendor_context),
     db: AsyncSession = Depends(get_db),
+    _rl: None = Depends(rate_limit_dependency),
 ) -> ActionProposalResponse:
     """Get a single proposal + its preview (vendor-scoped)."""
     proposal = await approval_service.get_proposal(
@@ -63,8 +66,10 @@ async def get_proposal(
 async def decide_proposal(
     proposal_id: str,
     body: ProposalDecisionRequest,
-    ctx: VendorContext = Depends(require_role(*_APPROVER_ROLES)),
+    ctx: VendorContext = Depends(get_vendor_context),
     db: AsyncSession = Depends(get_db),
+    _rl: None = Depends(rate_limit_dependency),
+    _role: None = Depends(require_role("owner", "admin", "support")),
 ) -> ActionProposalResponse:
     """Approve or reject a pending proposal.
 

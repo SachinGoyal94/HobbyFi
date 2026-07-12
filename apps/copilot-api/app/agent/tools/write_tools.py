@@ -23,6 +23,7 @@ from crewai.tools.base_tool import BaseTool
 from pydantic import BaseModel, Field
 
 from app.agent.tools.registry import ToolRunContext
+from app.agent.tools.rbac import check_tool_permission
 from app.config import get_settings
 from app.db.session import AsyncSessionLocal
 from app.domain.models import ActionProposal, AuditEvent
@@ -113,6 +114,15 @@ class _WriteToolBase(BaseTool):
     _session_id: Optional[str]
     _message_id: Optional[str]
     _db: Any = None
+
+    def _check_permission(self) -> str | None:
+        """Return error JSON if role not allowed, else None."""
+        from app.agent.tools.rbac import check_tool_permission
+        if not check_tool_permission(self.name, self._ctx.role):
+            return json.dumps({
+                "error": f"Role '{self._ctx.role}' not authorized to use tool '{self.name}'",
+            })
+        return None
 
     @asynccontextmanager
     async def _get_session(self):
@@ -439,13 +449,14 @@ async def invoke_propose_tool_direct(
     *,
     session_id: str | None = None,
     message_id: str | None = None,
+    db=None,
 ) -> str:
     """Call a propose_* tool by name without the agent (tests / deterministic path)."""
     run_ctx = run_ctx or ToolRunContext()
     tools = {
         t.name: t
         for t in build_write_tools(
-            ctx, run_ctx, session_id=session_id, message_id=message_id
+            ctx, run_ctx, session_id=session_id, message_id=message_id, db=db
         )
     }
     if action not in tools:

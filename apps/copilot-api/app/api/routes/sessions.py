@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.rate_limiter import rate_limit_dependency
 from app.db.session import get_db
 from app.deps import get_vendor_context
 from app.domain.models import ChatMessage, ChatSession
@@ -105,6 +106,7 @@ async def post_message(
     body: ChatMessageCreate,
     ctx: VendorContext = Depends(get_vendor_context),
     db: AsyncSession = Depends(get_db),
+    _rl: None = Depends(rate_limit_dependency),
 ) -> ChatTurnResponse:
     """Post a user message, run the read copilot, return the full turn."""
     session = await chat_service.get_session_for_vendor(
@@ -130,6 +132,7 @@ async def post_message_stream(
     body: ChatMessageCreate,
     ctx: VendorContext = Depends(get_vendor_context),
     db: AsyncSession = Depends(get_db),
+    _rl: None = Depends(rate_limit_dependency),
 ) -> StreamingResponse:
     """SSE stream for a chat turn: status events + final result.
 

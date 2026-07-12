@@ -1,9 +1,9 @@
-"""CrewAI single-agent copilot for Phase 1/2: read + write (proposals)."""
+"""CrewAI multi-agent copilot (Phase 3): Intent Router → Specialist → Composer."""
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from app.agent.llm import get_llm
 from app.agent.tools.read_tools import build_read_tools
@@ -13,40 +13,147 @@ from app.domain.schemas import VendorContext
 
 logger = logging.getLogger(__name__)
 
-COPILOT_BACKSTORY = """\
-You are the Vendor Portal Copilot for a single vendor in a multi-tenant sports/
-gaming platform. You answer factual questions about this vendor's users, games,
-memberships, trials, and revenue using READ tools only.
+# ── System prompts ────────────────────────────────────────────────────────────
 
-For write/mutation requests (extend trial, change plan, suspend user, update dates):
-- You do NOT execute changes directly.
-- You CREATE A PROPOSAL using the appropriate propose_* tool.
-- The proposal includes a clear BEFORE/AFTER preview.
-- The vendor must APPROVE the proposal via the portal UI (not you) before execution.
-- Explain clearly: "This creates a pending proposal. No data is changed until you approve it."
+ROUTER_SYSTEM = """\
+You are the Intent Router for a vendor portal copilot.
 
-Hard rules:
-- You serve ONLY the authenticated vendor. Never claim data for other vendors.
-- Prefer tools over guessing. If data is missing, say so clearly.
-- Do not invent user ids, revenue numbers, or membership dates.
-- For "today" or relative dates, rely on tools which use the vendor timezone.
-- Refuse out-of-scope asks (other vendors, secrets, bulk deletes, raw SQL).
-- If the user asks to change data and you don't have a matching propose_* tool, say it's not supported yet.
+Classify the user's message into exactly ONE of these intents:
+- "read"          : factual question about users, games, trials, revenue, memberships
+- "write_propose" : request to change data (extend trial, change plan, suspend user, update dates)
+- "clarify"       : ambiguous, missing details, or follow-up that needs disambiguation
+- "refuse"        : out of scope (other vendors, secrets, bulk ops, raw SQL, cross-tenant)
+
+Return ONLY a JSON object: {"intent": "<one of the four>", "reason": "<brief>"}
 """
 
-TOOL_USE_GUIDANCE = """\
-When the user asks a question:
-1. Use READ tools (list_trial_users, get_revenue, search_users, get_user, get_membership, list_games, get_vendor_summary) for factual queries.
-2. If the user wants to CHANGE data, use the matching PROPOSE tool:
-   - "extend trial" / "add days to trial" → propose_extend_trial
-   - "change plan" / "upgrade/downgrade" → propose_change_plan
-   - "suspend user" / "ban user" → propose_suspend_user
-   - "update membership dates" / "set start/end" → propose_update_membership_dates
-3. After calling a propose_* tool, you will receive a proposal_id, preview, and expiry.
-   Explain the preview to the user and state clearly: "This is PENDING approval. No data has been changed."
-4. Do not claim success until the proposal status is "executed" (which happens after vendor approval, outside this chat).
+DATA_ANALYST_SYSTEM = """\
+You are the Data Analyst for a single vendor in a multi-tenant sports/gaming platform.
+
+You have READ-ONLY access via these tools:
+- list_games
+- list_trial_users
+- get_revenue
+- search_users
+- get_user
+- get_membership
+- get_vendor_summary
+
+Rules:
+- Answer ONLY the authenticated vendor's questions (vendor_id from context).
+- Use tools for ALL factual queries — never guess or invent numbers.
+- For "today" / relative dates, rely on tools (they use vendor timezone).
+- If data is missing, say so clearly.
+- Output concise, grounded answers with key figures.
+- Do NOT create proposals or mutate data.
 """
 
+ACTION_PLANNER_SYSTEM = """\
+You are the Action Planner for a single vendor in a multi-tenant sports/gaming platform.
+
+You create PROPOSALS for write requests using these tools:
+- propose_extend_trial(user_id, game_slug, extra_days)
+- propose_change_plan(user_id, game_slug, new_plan)
+- propose_suspend_user(user_id, reason)
+- propose_update_membership_dates(user_id, game_slug, starts_at?, ends_at?)
+
+Rules:
+- You do NOT execute changes directly. Each tool creates a pending ActionProposal.
+- The proposal includes a BEFORE/AFTER preview and expires (typically 15 min).
+- The vendor must APPROVE via the portal UI (not you) before execution.
+- Always explain the preview and state: "This is PENDING approval. No data has been changed."
+- If the user lacks details (which user, which game, how many days), ask for clarification — do NOT guess.
+- Only one propose_* tool per turn. If multiple changes needed, handle sequentially.
+"""
+
+COMPOSER_SYSTEM = """\
+You are the Response Composer. Your job is to produce the final user-facing answer.
+
+Input: tool results from Data Analyst or Action Planner (provided in task description).
+Output: A single JSON object with keys:
+  - "text": natural-language answer (concise, grounded in tool results)
+  - "blocks": array of UI blocks (table, kpi, proposal_card) — pass through from tool results
+  - "tool_traces": array of tool traces — pass through from tool results
+
+Rules:
+- Summarize key numbers from tables/KPIs into the text.
+- If a proposal was created, include its proposal_id, preview, expiry, and the required approval notice.
+- Do not add information not present in tool results.
+- Keep text concise and vendor-friendly.
+"""
+
+
+# ── Agent builders ────────────────────────────────────────────────────────────
+
+def _build_router_agent():
+    from crewai import Agent
+    llm = get_llm()
+    return Agent(
+        role="Intent Router",
+        goal="Classify user message into read | write_propose | clarify | refuse",
+        backstory=ROUTER_SYSTEM,
+        llm=llm,
+        tools=[],
+        verbose=False,
+        allow_delegation=False,
+        max_iter=1,
+    )
+
+
+def _build_data_analyst_agent(ctx: VendorContext, run_ctx: ToolRunContext, db=None):
+    from crewai import Agent
+    llm = get_llm()
+    tools = build_read_tools(ctx, run_ctx, db=db)
+    return Agent(
+        role="Data Analyst",
+        goal=(
+            f"Answer factual questions for vendor '{ctx.vendor_name}' ({ctx.vendor_id}) "
+            f"using read tools. Timezone: {ctx.timezone}."
+        ),
+        backstory=DATA_ANALYST_SYSTEM,
+        llm=llm,
+        tools=tools,
+        verbose=False,
+        allow_delegation=False,
+        max_iter=5,
+    )
+
+
+def _build_action_planner_agent(ctx: VendorContext, run_ctx: ToolRunContext, db=None, session_id=None, message_id=None):
+    from crewai import Agent
+    llm = get_llm()
+    tools = build_write_tools(ctx, run_ctx, session_id=session_id, message_id=message_id, db=db)
+    return Agent(
+        role="Action Planner",
+        goal=(
+            f"Create safe, auditable proposals for vendor '{ctx.vendor_name}' "
+            f"({ctx.vendor_id}) using propose_* tools."
+        ),
+        backstory=ACTION_PLANNER_SYSTEM,
+        llm=llm,
+        tools=tools,
+        verbose=False,
+        allow_delegation=False,
+        max_iter=3,
+    )
+
+
+def _build_composer_agent():
+    from crewai import Agent
+    llm = get_llm()
+    return Agent(
+        role="Response Composer",
+        goal="Produce final user-facing answer from tool results.",
+        backstory=COMPOSER_SYSTEM,
+        llm=llm,
+        tools=[],
+        verbose=False,
+        allow_delegation=False,
+        max_iter=1,
+    )
+
+
+# ── Pipeline ────────────────────────────────────────────────────────────────
 
 async def run_copilot_turn(
     *,
@@ -57,98 +164,121 @@ async def run_copilot_turn(
     message_id: str | None = None,
     db=None,
 ) -> dict[str, Any]:
-    """Run one agent turn and return text + UI blocks + tool traces."""
+    """Run the 4-agent sequential pipeline: Router → Specialist → Composer."""
     run_ctx = ToolRunContext()
-    read_tools = build_read_tools(ctx, run_ctx, db=db)
-    write_tools = build_write_tools(ctx, run_ctx, session_id=session_id, message_id=message_id, db=db)
-    all_tools = read_tools + write_tools
-    llm = get_llm()
 
-    from crewai import Agent, Crew, Process, Task
+    # 1) Intent Router
+    router_agent = _build_router_agent()
+    from crewai import Crew, Process, Task
 
-    history_text = _format_history(history or [])
-
-    agent = Agent(
-        role="Vendor Portal Copilot",
-        goal=(
-            f"Answer portal questions accurately for vendor '{ctx.vendor_name}' "
-            f"({ctx.vendor_id}) using tools. Timezone: {ctx.timezone}. "
-            f"For write requests, create proposals — never mutate directly."
-        ),
-        backstory=COPILOT_BACKSTORY + "\n\n" + TOOL_USE_GUIDANCE,
-        llm=llm,
-        tools=all_tools,
-        verbose=False,
-        allow_delegation=False,
-        max_iter=6,
+    router_task = Task(
+        description=f"Classify this user message:\n\n{user_message}",
+        expected_output='JSON: {"intent": "read|write_propose|clarify|refuse", "reason": "..."}',
+        agent=router_agent,
     )
+    router_crew = Crew(agents=[router_agent], tasks=[router_task], process=Process.sequential, verbose=False, memory=False)
+    router_result = await router_crew.kickoff_async()
 
-    task = Task(
+    import json
+    try:
+        router_out = json.loads(_extract_text(router_result))
+        intent = router_out.get("intent", "clarify")
+    except Exception:
+        intent = "clarify"
+
+    logger.info("intent_classified vendor_id=%s intent=%s", ctx.vendor_id, intent)
+
+    # 2) Specialist
+    specialist_output = {}
+    blocks = []
+    traces = []
+
+    if intent == "read":
+        analyst = _build_data_analyst_agent(ctx, run_ctx, db=db)
+        analyst_task = Task(
+            description=(
+                f"Vendor context: vendor_id={ctx.vendor_id}, name={ctx.vendor_name}, "
+                f"timezone={ctx.timezone}, role={ctx.role}.\n\n"
+                f"User message:\n{user_message}\n\n"
+                "Use read tools to answer. Return concise answer with data."
+            ),
+            expected_output="Answer grounded in tool results. Include key figures.",
+            agent=analyst,
+        )
+        analyst_crew = Crew(agents=[analyst], tasks=[analyst_task], process=Process.sequential, verbose=False, memory=False)
+        analyst_result = await analyst_crew.kickoff_async()
+        specialist_output["text"] = _extract_text(analyst_result)
+
+    elif intent == "write_propose":
+        planner = _build_action_planner_agent(ctx, run_ctx, db=db, session_id=session_id, message_id=message_id)
+        planner_task = Task(
+            description=(
+                f"Vendor context: vendor_id={ctx.vendor_id}, name={ctx.vendor_name}, "
+                f"timezone={ctx.timezone}, role={ctx.role}.\n\n"
+                f"User message:\n{user_message}\n\n"
+                "Create the appropriate proposal using propose_* tool. "
+                "If details missing (user_id, game_slug, days, plan), ask for clarification."
+            ),
+            expected_output="Proposal created with preview. State clearly that approval is required.",
+            agent=planner,
+        )
+        planner_crew = Crew(agents=[planner], tasks=[planner_task], process=Process.sequential, verbose=False, memory=False)
+        planner_result = await planner_crew.kickoff_async()
+        specialist_output["text"] = _extract_text(planner_result)
+
+    elif intent == "clarify":
+        specialist_output["text"] = "I need a bit more information to help. Could you clarify which user, game, or what specific change you'd like?"
+    else:  # refuse
+        specialist_output["text"] = "I can't help with that. I only answer questions and create proposals for your vendor's data."
+
+    # Collect tool outputs from run_ctx
+    blocks = list(run_ctx.blocks)
+    traces = list(run_ctx.traces)
+
+    # 3) Composer
+    composer = _build_composer_agent()
+    composer_task = Task(
         description=(
-            f"Vendor context: vendor_id={ctx.vendor_id}, name={ctx.vendor_name}, "
-            f"timezone={ctx.timezone}, role={ctx.role}.\n\n"
-            f"Recent conversation:\n{history_text or '(none)'}\n\n"
-            f"User message:\n{user_message}\n\n"
-            "Use tools as needed, then give a clear, concise answer. "
-            "If you used a propose_* tool, explain the preview and state that approval is required."
+            f"Original user message:\n{user_message}\n\n"
+            f"Specialist output:\n{specialist_output.get('text', '')}\n\n"
+            f"Tool blocks:\n{json.dumps(blocks, default=str)}\n\n"
+            f"Tool traces:\n{json.dumps(traces, default=str)}"
         ),
         expected_output=(
-            "A natural-language answer grounded in tool results. "
-            "If tools returned tables, summarize key rows. "
-            "If a propose_* tool was called, include the proposal_id and preview summary, "
-            "and state that approval is required before execution."
+            'JSON: {"text": "...", "blocks": [...], "tool_traces": [...]}'
         ),
-        agent=agent,
+        agent=composer,
     )
+    composer_crew = Crew(agents=[composer], tasks=[composer_task], process=Process.sequential, verbose=False, memory=False)
+    composer_result = await composer_crew.kickoff_async()
 
-    crew = Crew(
-        agents=[agent],
-        tasks=[task],
-        process=Process.sequential,
-        verbose=False,
-        memory=False,
-    )
-
-    logger.info(
-        "copilot_turn_start vendor_id=%s session_role=%s write_tools=%d",
-        ctx.vendor_id,
-        ctx.role,
-        len(write_tools),
-    )
-    # Use kickoff_async since we're in an async context
-    result = await crew.kickoff_async()
-    text = _result_to_text(result)
+    # Parse composer output
+    try:
+        final = json.loads(_extract_text(composer_result))
+        text = final.get("text", specialist_output.get("text", ""))
+        final_blocks = final.get("blocks", blocks)
+        final_traces = final.get("tool_traces", traces)
+    except Exception:
+        text = specialist_output.get("text", _extract_text(composer_result))
+        final_blocks = blocks
+        final_traces = traces
 
     return {
         "text": text,
-        "blocks": list(run_ctx.blocks),
-        "tool_traces": list(run_ctx.traces),
-        "raw": result,
+        "blocks": final_blocks,
+        "tool_traces": final_traces,
+        "raw": {"router": router_result, "specialist": specialist_output, "composer": composer_result},
     }
 
 
-def _format_history(history: list[dict[str, str]], *, max_turns: int = 6) -> str:
-    if not history:
-        return ""
-    lines: list[str] = []
-    for turn in history[-max_turns:]:
-        role = turn.get("role", "user")
-        content = (turn.get("content") or "").strip()
-        if content:
-            lines.append(f"{role}: {content}")
-    return "\n".join(lines)
-
-
-def _result_to_text(result: Any) -> str:
+def _extract_text(result: Any) -> str:
     if result is None:
-        return "I could not produce an answer."
+        return ""
     if isinstance(result, str):
-        return result.strip() or "I could not produce an answer."
-    # CrewAI CrewOutput
+        return result.strip()
     for attr in ("raw", "output", "result"):
         if hasattr(result, attr):
             val = getattr(result, attr)
             if isinstance(val, str) and val.strip():
                 return val.strip()
-    text = str(result).strip()
-    return text or "I could not produce an answer."
+    return str(result).strip()

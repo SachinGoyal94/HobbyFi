@@ -19,6 +19,7 @@ from crewai.tools.base_tool import BaseTool
 from pydantic import BaseModel, Field
 
 from app.agent.tools.registry import ToolRunContext
+from app.agent.tools.rbac import check_tool_permission, ALL_TOOL_PERMISSIONS
 from app.db.session import AsyncSessionLocal
 from app.domain.repos.games import GamesRepo
 from app.domain.repos.memberships import MembershipsRepo
@@ -73,6 +74,15 @@ class _ReadToolBase(BaseTool):
     def _record(self, tool: str, args: dict, result: Any, block: dict | None = None) -> None:
         self._run_ctx.record(tool, args, result, block=block)
 
+    def _check_permission(self) -> str | None:
+        """Check if current role can use this tool. Returns error JSON string if denied, None if allowed."""
+        if not check_tool_permission(self.name, self._ctx.role):
+            return json.dumps({
+                "error": f"Role '{self._ctx.role}' not authorized to use tool '{self.name}'",
+                "allowed_roles": list(ALL_TOOL_PERMISSIONS.get(self.name, set())),
+            })
+        return None
+
     @asynccontextmanager
     async def _get_session(self):
         if self._db:
@@ -92,6 +102,8 @@ class ListGamesTool(_ReadToolBase):
     description: str = "List games owned by the current vendor. No arguments."
 
     async def _run(self) -> str:
+        if err := self._check_permission():
+            return err
         async with self._get_session() as session:
             rows = await GamesRepo(session).list_games(vendor_id=self._ctx.vendor_id)
         self._record(
@@ -121,6 +133,8 @@ class ListTrialUsersTool(_ReadToolBase):
     args_schema: type[BaseModel] = ListTrialUsersArgs
 
     async def _run(self, game_slug: Optional[str] = None, limit: int = 20) -> str:
+        if err := self._check_permission():
+            return err
         limit = max(1, min(int(limit or 20), 50))
         async with self._get_session() as session:
             rows = await MembershipsRepo(session).list_trials(
@@ -170,6 +184,8 @@ class GetRevenueTool(_ReadToolBase):
     args_schema: type[BaseModel] = GetRevenueArgs
 
     async def _run(self, game_slug: Optional[str] = None) -> str:
+        if err := self._check_permission():
+            return err
         # Server resolves "today" from ctx.timezone — the LLM must NOT supply a date.
         async with self._get_session() as session:
             result = await RevenueRepo(session).get_revenue(
@@ -210,6 +226,8 @@ class SearchUsersTool(_ReadToolBase):
     args_schema: type[BaseModel] = SearchUsersArgs
 
     async def _run(self, query: str, limit: int = 20) -> str:
+        if err := self._check_permission():
+            return err
         limit = max(1, min(int(limit or 20), 50))
         async with self._get_session() as session:
             rows = await UsersRepo(session).search(
@@ -244,6 +262,8 @@ class GetUserTool(_ReadToolBase):
     args_schema: type[BaseModel] = GetUserArgs
 
     async def _run(self, user_id: str) -> str:
+        if err := self._check_permission():
+            return err
         async with self._get_session() as session:
             user = await UsersRepo(session).get_user(
                 vendor_id=self._ctx.vendor_id, user_id=user_id
@@ -347,10 +367,11 @@ async def invoke_read_tool_direct(
     args: dict[str, Any],
     ctx: VendorContext,
     run_ctx: ToolRunContext | None = None,
+    db=None,
 ) -> str:
     """Call a read tool by name without the agent (tests / deterministic path)."""
     run_ctx = run_ctx or ToolRunContext()
-    tools = {t.name: t for t in build_read_tools(ctx, run_ctx)}
+    tools = {t.name: t for t in build_read_tools(ctx, run_ctx, db=db)}
     if name not in tools:
         raise KeyError(f"Unknown tool: {name}")
     tool_obj = tools[name]
