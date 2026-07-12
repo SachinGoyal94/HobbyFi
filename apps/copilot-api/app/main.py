@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.middleware.request_id import RequestIDMiddleware
-from app.api.routes import health, sessions, utility
+from app.api.routes import health, proposals, sessions, utility
 from app.config import get_settings
 from app.db.session import engine
 from app.domain.models import Base
@@ -69,6 +69,7 @@ def create_app() -> FastAPI:
     # Routes
     app.include_router(health.router, tags=["Health"])
     app.include_router(sessions.router, prefix="/v1/copilot", tags=["Chat"])
+    app.include_router(proposals.router, prefix="/v1/copilot/proposals", tags=["Approvals"])
     app.include_router(utility.router, tags=["Admin"])
 
     return app

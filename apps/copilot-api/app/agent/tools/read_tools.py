@@ -12,7 +12,6 @@ exposes ``.name`` and ``.run(**args)`` so the deterministic test path
 from __future__ import annotations
 
 import json
-from datetime import date
 from typing import Any, Optional
 
 from crewai.tools.base_tool import BaseTool
@@ -39,7 +38,6 @@ class ListTrialUsersArgs(BaseModel):
 
 
 class GetRevenueArgs(BaseModel):
-    day: Optional[str] = Field(None, description="ISO date YYYY-MM-DD; defaults to today (vendor TZ)")
     game_slug: Optional[str] = Field(None, description="Game slug; omit for all-games rollup")
 
 
@@ -58,7 +56,7 @@ class GetMembershipArgs(BaseModel):
 
 
 class GetVendorSummaryArgs(BaseModel):
-    day: Optional[str] = Field(None, description="ISO date YYYY-MM-DD; defaults to today (vendor TZ)")
+    pass
 
 
 # ── Tool base ────────────────────────────────────────────────────────────────
@@ -152,21 +150,22 @@ class ListTrialUsersTool(_ReadToolBase):
 class GetRevenueTool(_ReadToolBase):
     name: str = "get_revenue"
     description: str = (
-        "Get revenue for a day (vendor timezone for 'today'). "
-        "Optional day (ISO) and game_slug; omit game_slug for all-games rollup."
+        "Get revenue for TODAY (resolved server-side in the vendor's timezone). "
+        "Optional game_slug filter; omit it for the all-games rollup. "
+        "Never pass a date — the tool always uses today."
     )
     args_schema: type[BaseModel] = GetRevenueArgs
 
-    def _run(self, day: Optional[str] = None, game_slug: Optional[str] = None) -> str:
-        parsed_day = _parse_day(day)
+    def _run(self, game_slug: Optional[str] = None) -> str:
+        # Server resolves "today" from ctx.timezone — the LLM must NOT supply a date.
         with SyncSessionLocal() as session:
             result = RevenueRepo(session).get_revenue(
                 vendor_id=self._ctx.vendor_id,
-                day=parsed_day,
+                day=None,
                 game_slug=game_slug,
                 timezone_name=self._ctx.timezone,
             )
-        args = {"day": day, "game_slug": game_slug}
+        args = {"game_slug": game_slug}
         self._record(
             "get_revenue",
             args,
@@ -276,21 +275,22 @@ class GetMembershipTool(_ReadToolBase):
 class GetVendorSummaryTool(_ReadToolBase):
     name: str = "get_vendor_summary"
     description: str = (
-        "High-level KPIs for the current vendor: users, trials, games, revenue."
+        "High-level KPIs for the current vendor: active users, active trials, "
+        "game count, and TODAY's revenue (resolved server-side). No arguments."
     )
     args_schema: type[BaseModel] = GetVendorSummaryArgs
 
-    def _run(self, day: Optional[str] = None) -> str:
-        parsed_day = _parse_day(day)
+    def _run(self) -> str:
+        # Server resolves "today" from ctx.timezone.
         with SyncSessionLocal() as session:
             summary = RevenueRepo(session).vendor_summary(
                 vendor_id=self._ctx.vendor_id,
-                day=parsed_day,
+                day=None,
                 timezone_name=self._ctx.timezone,
             )
         self._record(
             "get_vendor_summary",
-            {"day": day},
+            {},
             summary,
             block={
                 "type": "kpi",
@@ -326,15 +326,6 @@ def build_read_tools(ctx: VendorContext, run_ctx: ToolRunContext) -> list[BaseTo
         instance._run_ctx = run_ctx
         tools.append(instance)
     return tools
-
-
-def _parse_day(value: str | None) -> date | None:
-    if not value:
-        return None
-    try:
-        return date.fromisoformat(value.strip()[:10])
-    except ValueError:
-        return None
 
 
 def invoke_read_tool_direct(
