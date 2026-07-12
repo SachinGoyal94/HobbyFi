@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="HobbyFi — the AI copilot for hobby & game app vendors. Ask about revenue and users, propose changes behind a human-in-the-loop approval gate. Safe by default." />
+  <meta name="theme-color" content="#0b0b14" />
+  <title>HobbyFi — Your Vendor Portal AI Copilot</title>
+
+  <!-- Optional web fonts (degrade gracefully offline) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%236366f1'/%3E%3Cpath d='M10 21V11h3.5a3.5 3.5 0 0 1 0 7H13v3zm3-5h.5a1.5 1.5 0 0 0 0-3H13z' fill='white'/%3E%3C/svg%3E" />
+</head>
+<body>
+  <!-- ======================= NAV ======================= -->
+  <header class="nav" id="nav">
+    <div class="nav__inner container">
+      <a class="brand" href="#top" aria-label="HobbyFi home">
+        <span class="brand__mark" aria-hidden="true">
+          <svg width="28" height="28" viewBox="0 0 32 32" fill="none">
+            <rect width="32" height="32" rx="9" fill="url(#bg)"/>
+            <path d="M10 21V11h3.6a3.6 3.6 0 0 1 0 7.2H13v2.8zm3-5h.6a1.6 1.6 0 0 0 0-3.2H13z" fill="white"/>
+            <defs><linearGradient id="bg" x1="0" y1="0" x2="32" y2="32"><stop stop-color="#818cf8"/><stop offset="1" stop-color="#a855f7"/></linearGradient></defs>
+          </svg>
+        </span>
+        <span class="brand__name">HobbyFi</span>
+      </a>
+
+      <nav class="nav__links" id="navLinks" aria-label="Primary">
+        <a href="#features">Features</a>
+        <a href="#how">How it works</a>
+        <a href="#demo">Live demo</a>
+        <a href="#safety">Safety</a>
+        <a href="#metrics">Results</a>
+      </nav>
+
+      <div class="nav__actions">
+        <a class="btn btn--ghost" href="#">Sign in</a>
+        <a class="btn btn--primary" href="#demo">Try the demo</a>
+        <button class="nav__toggle" id="navToggle" aria-label="Toggle menu" aria-expanded="false">
+          <span></span><span></span><span></span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main id="top">
+    <!-- ======================= HERO ======================= -->
+    <section class="hero">
+      <div class="hero__glow" aria-hidden="true"></div>
+      <div class="container hero__inner">
+        <div class="hero__copy">
+          <span class="pill"><span class="pill__dot"></span> AI copilot for vendor portals</span>
+          <h1 class="hero__title">
+            Ask your data anything.<br />
+            <span class="grad">Ship changes only when you say so.</span>
+          </h1>
+          <p class="hero__sub">
+            HobbyFi is the AI copilot living inside your vendor portal. It answers
+            questions about revenue, users, and trials — and proposes mutations
+            behind a <strong>human-in-the-loop approval gate</strong>. Safe by design,
+            scoped to your vendor, fully auditable.
+          </p>
+          <div class="hero__cta">
+            <a class="btn btn--primary btn--lg" href="#demo">See it in action</a>
+            <a class="btn btn--ghost btn--lg" href="#how">How it works</a>
+          </div>
+          <div class="hero__trust">
+            <div class="avatars" aria-hidden="true">
+              <span style="--i:0"></span><span style="--i:1"></span><span style="--i:2"></span><span style="--i:3"></span>
+            </div>
+            <p>Trusted by <strong>1,200+</strong> studios shipping hobby &amp; game apps</p>
+          </div>
+        </div>
+
+        <!-- Floating chat mock -->
+        <div class="hero__visual">
+          <div class="chat" id="heroChat" aria-label="Example conversation with HobbyFi" role="img">
+            <div class="chat__bar">
+              <span class="chat__dot chat__dot--r"></span>
+              <span class="chat__dot chat__dot--y"></span>
+              <span class="chat__dot chat__dot--g"></span>
+              <span class="chat__bar-label">HobbyFi Copilot</span>
+            </div>
+            <div class="chat__body" id="heroChatBody"></div>
+            <div class="chat__input" aria-hidden="true">
+              <span class="chat__typing">Ask anything…</span>
+              <span class="chat__send">↵</span>
+            </div>
+          </div>
+          <div class="chat__shadow" aria-hidden="true"></div>
+        </div>
+      </div>
+
+      <!-- logo strip -->
+      <div class="logos container" aria-label="Representative customers">
+        <span class="logos__label">Powering vendor teams at</span>
+        <div class="logos__row">
+          <span class="logo-chip">PixelForge</span>
+          <span class="logo-chip">Loom&shy;wood</span>
+          <span class="logo-chip">Nimbus Games</span>
+          <span class="logo-chip">CardCraft</span>
+          <span class="logo-chip">Tin&shy;yPlanet</span>
+          <span class="logo-chip">Echo&shy;beat</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================= FEATURES ======================= -->
+    <section class="section" id="features">
+      <div class="container">
+        <div class="section__head">
+          <span class="eyebrow">Capabilities</span>
+          <h2>Built for the questions vendors actually ask</h2>
+          <p class="section__lead">Read answers instantly. Write operations are proposed, never executed, until you approve.</p>
+        </div>
+
+        <div class="grid grid--3">
+          <article class="card">
+            <div class="card__icon" style="--c:#818cf8">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            </div>
+            <h3>Natural-language Q&amp;A</h3>
+            <p>“What was revenue today?” or “List trial users of my badminton game” — get scoped answers instantly, no SQL required.</p>
+          </article>
+
+          <article class="card">
+            <div class="card__icon" style="--c:#34d399">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>
+            </div>
+            <h3>Write proposals, not writes</h3>
+            <p>Every mutation becomes a pending action proposal. Approve it, and only then does it execute. Reject it and nothing changes.</p>
+          </article>
+
+          <article class="card">
+            <div class="card__icon" style="--c:#a855f7">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            </div>
+            <h3>Vendor isolation</h3>
+            <p>Every query and mutation is filtered by your vendor ID from the session — never from the model. You only ever see your own data.</p>
+          </article>
+
+          <article class="card">
+            <div class="card__icon" style="--c:#f59e0b">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+            </div>
+            <h3>Revenue &amp; growth insights</h3>
+            <p>Track trials, conversions, and MRR across every title in your portfolio with clean, readable result tables.</p>
+          </article>
+
+          <article class="card">
+            <div class="card__icon" style="--c:#22d3ee">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h4"/></svg>
+            </div>
+            <h3>Full audit trail</h3>
+            <p>Every intent, proposal, approval, and execution is logged with correlation IDs. Rewind any decision, anytime.</p>
+          </article>
+
+          <article class="card">
+            <div class="card__icon" style="--c:#fb7185">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 6v6c0 5 3.5 8 8 10 4.5-2 8-5 8-10V6z"/><path d="m9 12 2 2 4-4"/></svg>
+            </div>
+            <h3>Idempotent &amp; safe</h3>
+            <p>Mutations carry idempotency keys, so double-approves and retries are harmless. The agent never touches production on its own.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================= HOW IT WORKS ======================= -->
+    <section class="section section--alt" id="how">
+      <div class="container">
+        <div class="section__head">
+          <span class="eyebrow">Architecture</span>
+          <h2>Read now. Write only with your okay.</h2>
+          <p class="section__lead">A multi-agent crew reasons over your data; a guardrail service sits between intent and execution.</p>
+        </div>
+
+        <ol class="steps">
+          <li class="step">
+            <span class="step__num">1</span>
+            <h3>Ask in plain English</h3>
+            <p>Your message enters the FastAPI layer, scoped to your vendor session via JWT. Thin routes, no business logic.</p>
+          </li>
+          <li class="step">
+            <span class="step__num">2</span>
+            <h3>A crew plans the answer</h3>
+            <p>A router agent, a data-analyst agent (reads), and an action-planner agent (writes) pick typed tools — never raw SQL.</p>
+          </li>
+          <li class="step step--gate">
+            <span class="step__num">3</span>
+            <h3>The approval gate</h3>
+            <p>Reads return immediately. Writes become a pending proposal you approve or reject from the portal. Nothing executes without you.</p>
+          </li>
+        </ol>
+      </div>
+    </section>
+
+    <!-- ======================= LIVE DEMO ======================= -->
+    <section class="section" id="demo">
+      <div class="container">
+        <div class="section__head">
+          <span class="eyebrow">Interactive demo</span>
+          <h2>Try the copilot — no backend required</h2>
+          <p class="section__lead">This is a front-end mock. Type a question or click a sample, then approve or reject the proposed action.</p>
+        </div>
+
+        <div class="demo">
+          <!-- chat panel -->
+          <div class="demo__chat">
+            <div class="demo__chat-head">
+              <span class="demo__chat-title">Copilot · vendor: <code>pixelforge</code></span>
+              <button class="demo__reset" id="demoReset" type="button">Reset</button>
+            </div>
+            <div class="demo__log" id="demoLog" aria-live="polite"></div>
+            <div class="demo__suggest" id="demoSuggest">
+              <button type="button" data-q="What was my revenue today?">What was revenue today?</button>
+              <button type="button" data-q="List trial users of my badminton game">Trial users of badminton game</button>
+              <button type="button" data-q="Extend the free trial for user Maya by 14 days">Extend Maya's trial +14d</button>
+            </div>
+            <form class="demo__form" id="demoForm">
+              <input id="demoInput" type="text" autocomplete="off" placeholder="Ask HobbyFi something…" aria-label="Ask the copilot" />
+              <button class="btn btn--primary" type="submit">Send</button>
+            </form>
+          </div>
+
+          <!-- approval side panel -->
+          <aside class="demo__side">
+            <div class="demo__side-head">
+              <h3>Pending approvals</h3>
+              <span class="badge" id="pendingCount">0</span>
+            </div>
+            <div class="demo__proposals" id="demoProposals">
+              <div class="empty" id="proposalsEmpty">No pending actions. Reads run instantly — only writes show up here.</div>
+            </div>
+            <div class="demo__audit">
+              <h4>Audit log</h4>
+              <ul id="demoAudit"><li class="empty">Awaiting activity…</li></ul>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================= SAFETY ======================= -->
+    <section class="section section--alt" id="safety">
+      <div class="container safety">
+        <div class="safety__copy">
+          <span class="eyebrow">Safe by default</span>
+          <h2>An AI that can’t surprise you</h2>
+          <p>HobbyFi inverts the usual risk: the model is powerful at <em>reasoning</em> but structurally incapable of <em>acting</em> on its own. Side effects always pass through you.</p>
+          <ul class="checklist">
+            <li><span class="check"></span> Tool-calling, never free-form SQL</li>
+            <li><span class="check"></span> Reads immediate · writes proposed only</li>
+            <li><span class="check"></span> Vendor-scoped data on every call</li>
+            <li><span class="check"></span> Immutable audit of every decision</li>
+            <li><span class="check"></span> Idempotent execution keys</li>
+          </ul>
+        </div>
+        <div class="safety__card">
+          <div class="safe-tag">PROPOSAL</div>
+          <p class="safe-title">Increase free trial — Maya R.</p>
+          <p class="safe-meta">Action planner → approval service</p>
+          <div class="safe-diff">
+            <div class="safe-diff__row"><span>trial_ends</span><span class="old">Jul 20</span><span class="arrow">→</span><span class="new">Aug 03</span></div>
+            <div class="safe-diff__row"><span>vendor_id</span><span class="const">pixelforge</span></div>
+            <div class="safe-diff__row"><span>idempotency</span><span class="const">wp_8f3a…</span></div>
+          </div>
+          <div class="safe-actions">
+            <button class="btn btn--approve" disabled>Approve</button>
+            <button class="btn btn--reject" disabled>Reject</button>
+          </div>
+          <p class="safe-note">Frozen until a human decides.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================= METRICS ======================= -->
+    <section class="section" id="metrics">
+      <div class="container">
+        <div class="metrics">
+          <div class="metric"><span class="metric__num" data-to="94" data-suffix="%">0%</span><span class="metric__label">Faster vendor answers</span></div>
+          <div class="metric"><span class="metric__num" data-to="0" data-suffix="" data-zero="0">0</span><span class="metric__label">Unauthorized writes</span></div>
+          <div class="metric"><span class="metric__num" data-to="1.2" data-suffix="k+" data-decimals="1">0</span><span class="metric__label">Vendor teams onboard</span></div>
+          <div class="metric"><span class="metric__num" data-to="38" data-suffix="ms">0ms</span><span class="metric__label">Median proposal latency</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================= FINAL CTA ======================= -->
+    <section class="cta">
+      <div class="cta__glow" aria-hidden="true"></div>
+      <div class="container cta__inner">
+        <h2>Put a safe copilot in your vendor portal.</h2>
+        <p>Read answers instantly. Approve every change. Audit everything.</p>
+        <div class="hero__cta">
+          <a class="btn btn--primary btn--lg" href="#demo">Try the demo</a>
+          <a class="btn btn--ghost btn--lg" href="#">Book a walkthrough</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ======================= FOOTER ======================= -->
+  <footer class="footer">
+    <div class="container footer__inner">
+      <div class="footer__brand">
+        <a class="brand" href="#top">
+          <span class="brand__mark" aria-hidden="true">
+            <svg width="28" height="28" viewBox="0 0 32 32" fill="none">
+              <rect width="32" height="32" rx="9" fill="url(#bg2)"/>
+              <path d="M10 21V11h3.6a3.6 3.6 0 0 1 0 7.2H13v2.8zm3-5h.6a1.6 1.6 0 0 0 0-3.2H13z" fill="white"/>
+              <defs><linearGradient id="bg2" x1="0" y1="0" x2="32" y2="32"><stop stop-color="#818cf8"/><stop offset="1" stop-color="#a855f7"/></linearGradient></defs>
+            </svg>
+          </span>
+          <span class="brand__name">HobbyFi</span>
+        </a>
+        <p>The vendor portal AI copilot. Safe by default.</p>
+      </div>
+      <nav class="footer__col" aria-label="Product">
+        <h4>Product</h4>
+        <a href="#features">Features</a>
+        <a href="#how">How it works</a>
+        <a href="#safety">Safety</a>
+        <a href="#demo">Live demo</a>
+      </nav>
+      <nav class="footer__col" aria-label="Resources">
+        <h4>Resources</h4>
+        <a href="#">Docs</a>
+        <a href="#">API reference</a>
+        <a href="#">Changelog</a>
+        <a href="#">Status</a>
+      </nav>
+      <nav class="footer__col" aria-label="Company">
+        <h4>Company</h4>
+        <a href="#">About</a>
+        <a href="#">Careers</a>
+        <a href="#">Security</a>
+        <a href="#">Contact</a>
+      </nav>
+    </div>
+    <div class="container footer__bottom">
+      <span>© 2026 HobbyFi. Demo landing page.</span>
+      <span class="footer__note">Front-end only · no backend wired.</span>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-"""CrewAI single-agent copilot for Phase 1 read Q&A."""
+"""CrewAI single-agent copilot for Phase 1/2: read + write (proposals)."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from typing import Any
 from app.agent.llm import get_llm
 from app.agent.tools.read_tools import build_read_tools
 from app.agent.tools.registry import ToolRunContext
+from app.agent.tools.write_tools import build_write_tools
 from app.domain.schemas import VendorContext
 
 logger = logging.getLogger(__name__)
@@ -15,53 +16,68 @@ logger = logging.getLogger(__name__)
 COPILOT_BACKSTORY = """\
 You are the Vendor Portal Copilot for a single vendor in a multi-tenant sports/
 gaming platform. You answer factual questions about this vendor's users, games,
-memberships, trials, and revenue using tools only.
+memberships, trials, and revenue using READ tools only.
+
+For write/mutation requests (extend trial, change plan, suspend user, update dates):
+- You do NOT execute changes directly.
+- You CREATE A PROPOSAL using the appropriate propose_* tool.
+- The proposal includes a clear BEFORE/AFTER preview.
+- The vendor must APPROVE the proposal via the portal UI (not you) before execution.
+- Explain clearly: "This creates a pending proposal. No data is changed until you approve it."
 
 Hard rules:
 - You serve ONLY the authenticated vendor. Never claim data for other vendors.
 - Prefer tools over guessing. If data is missing, say so clearly.
 - Do not invent user ids, revenue numbers, or membership dates.
-- Do not perform or claim any write/mutation. Phase 1 is read-only.
-  If the user asks to change data (extend trial, suspend user, change plan),
-  explain that write actions require approval and are not available yet.
-- Refuse out-of-scope asks (other vendors, secrets, bulk deletes, raw SQL).
-- When presenting numbers, use the tool results (cents may include dollar fields).
 - For "today" or relative dates, rely on tools which use the vendor timezone.
+- Refuse out-of-scope asks (other vendors, secrets, bulk deletes, raw SQL).
+- If the user asks to change data and you don't have a matching propose_* tool, say it's not supported yet.
+"""
+
+TOOL_USE_GUIDANCE = """\
+When the user asks a question:
+1. Use READ tools (list_trial_users, get_revenue, search_users, get_user, get_membership, list_games, get_vendor_summary) for factual queries.
+2. If the user wants to CHANGE data, use the matching PROPOSE tool:
+   - "extend trial" / "add days to trial" → propose_extend_trial
+   - "change plan" / "upgrade/downgrade" → propose_change_plan
+   - "suspend user" / "ban user" → propose_suspend_user
+   - "update membership dates" / "set start/end" → propose_update_membership_dates
+3. After calling a propose_* tool, you will receive a proposal_id, preview, and expiry.
+   Explain the preview to the user and state clearly: "This is PENDING approval. No data has been changed."
+4. Do not claim success until the proposal status is "executed" (which happens after vendor approval, outside this chat).
 """
 
 
-def run_copilot_turn(
+async def run_copilot_turn(
     *,
     user_message: str,
     ctx: VendorContext,
     history: list[dict[str, str]] | None = None,
+    session_id: str | None = None,
+    message_id: str | None = None,
+    db=None,
 ) -> dict[str, Any]:
-    """Run one agent turn and return text + UI blocks + tool traces.
-
-    Returns:
-        {
-          "text": str,
-          "blocks": list[dict],
-          "tool_traces": list[dict],
-          "raw": Any,
-        }
-    """
+    """Run one agent turn and return text + UI blocks + tool traces."""
     run_ctx = ToolRunContext()
-    tools = build_read_tools(ctx, run_ctx)
+    read_tools = build_read_tools(ctx, run_ctx, db=db)
+    write_tools = build_write_tools(ctx, run_ctx, session_id=session_id, message_id=message_id, db=db)
+    all_tools = read_tools + write_tools
     llm = get_llm()
 
     from crewai import Agent, Crew, Process, Task
 
     history_text = _format_history(history or [])
+
     agent = Agent(
         role="Vendor Portal Copilot",
         goal=(
             f"Answer portal questions accurately for vendor '{ctx.vendor_name}' "
-            f"({ctx.vendor_id}) using read tools. Timezone: {ctx.timezone}."
+            f"({ctx.vendor_id}) using tools. Timezone: {ctx.timezone}. "
+            f"For write requests, create proposals — never mutate directly."
         ),
-        backstory=COPILOT_BACKSTORY,
+        backstory=COPILOT_BACKSTORY + "\n\n" + TOOL_USE_GUIDANCE,
         llm=llm,
-        tools=tools,
+        tools=all_tools,
         verbose=False,
         allow_delegation=False,
         max_iter=6,
@@ -73,13 +89,14 @@ def run_copilot_turn(
             f"timezone={ctx.timezone}, role={ctx.role}.\n\n"
             f"Recent conversation:\n{history_text or '(none)'}\n\n"
             f"User message:\n{user_message}\n\n"
-            "Use tools as needed, then give a clear, concise answer for the "
-            "vendor user. Do not invent facts."
+            "Use tools as needed, then give a clear, concise answer. "
+            "If you used a propose_* tool, explain the preview and state that approval is required."
         ),
         expected_output=(
             "A natural-language answer grounded in tool results. "
-            "If tools returned tables of data, summarize the key rows. "
-            "If nothing was found, say so."
+            "If tools returned tables, summarize key rows. "
+            "If a propose_* tool was called, include the proposal_id and preview summary, "
+            "and state that approval is required before execution."
         ),
         agent=agent,
     )
@@ -93,11 +110,13 @@ def run_copilot_turn(
     )
 
     logger.info(
-        "copilot_turn_start vendor_id=%s session_role=%s",
+        "copilot_turn_start vendor_id=%s session_role=%s write_tools=%d",
         ctx.vendor_id,
         ctx.role,
+        len(write_tools),
     )
-    result = crew.kickoff()
+    # Use kickoff_async since we're in an async context
+    result = await crew.kickoff_async()
     text = _result_to_text(result)
 
     return {

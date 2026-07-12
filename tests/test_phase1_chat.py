@@ -39,7 +39,7 @@ async def test_post_message_returns_turn_with_assistant(client: AsyncClient):
 async def test_agent_runner_receives_vendor_context(client: AsyncClient):
     seen: dict = {}
 
-    def runner(*, user_message: str, ctx: VendorContext, history=None):
+    async def runner(*, user_message: str, ctx: VendorContext, history=None, session_id=None, message_id=None, db=None):
         seen["vendor_id"] = ctx.vendor_id
         seen["message"] = user_message
         return {
@@ -69,7 +69,7 @@ async def test_agent_runner_receives_vendor_context(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_agent_error_still_returns_assistant_message(client: AsyncClient):
-    def boom(*, user_message: str, ctx, history=None):
+    async def boom(*, user_message: str, ctx, history=None, session_id=None, message_id=None):
         raise RuntimeError("gemini down")
 
     chat_service.set_agent_runner(boom)
@@ -111,10 +111,10 @@ async def test_stream_endpoint_emits_sse_events(client: AsyncClient):
 async def test_tool_backed_agent_simulation(client: AsyncClient):
     """Simulate what the agent does: call real tools with vendor context."""
 
-    def tool_backed(*, user_message: str, ctx: VendorContext, history=None):
+    async def tool_backed(*, user_message: str, ctx: VendorContext, history=None, session_id=None, message_id=None, db=None):
         run_ctx = ToolRunContext()
         if "trial" in user_message.lower() and "badminton" in user_message.lower():
-            raw = invoke_read_tool_direct(
+            raw = await invoke_read_tool_direct(
                 "list_trial_users",
                 {"game_slug": "badminton"},
                 ctx,
@@ -124,7 +124,7 @@ async def test_tool_backed_agent_simulation(client: AsyncClient):
             names = [u["display_name"] for u in data["trial_users"]]
             text = f"Found {data['count']} trial users: {', '.join(names)}"
         elif "revenue" in user_message.lower():
-            raw = invoke_read_tool_direct("get_revenue", {}, ctx, run_ctx)
+            raw = await invoke_read_tool_direct("get_revenue", {}, ctx, run_ctx)
             data = json.loads(raw)
             text = f"Today's net revenue is ${data.get('net', '0.00')}"
         else:

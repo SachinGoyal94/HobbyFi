@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -23,8 +24,8 @@ from pydantic import BaseModel, Field
 
 from app.agent.tools.registry import ToolRunContext
 from app.config import get_settings
-from app.db.sync_session import SyncSessionLocal
-from app.domain.models import ActionProposal, AuditEvent, Membership
+from app.db.session import AsyncSessionLocal
+from app.domain.models import ActionProposal, AuditEvent
 from app.domain.repos.memberships import MembershipsRepo
 from app.domain.repos.users import UsersRepo
 from app.domain.schemas import VendorContext
@@ -38,6 +39,15 @@ def _utcnow() -> datetime:
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+def _parse_dt(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _proposal_payload(
@@ -102,6 +112,16 @@ class _WriteToolBase(BaseTool):
     _run_ctx: ToolRunContext
     _session_id: Optional[str]
     _message_id: Optional[str]
+    _db: Any = None
+
+    @asynccontextmanager
+    async def _get_session(self):
+        if self._db:
+            async with self._db as session:
+                yield session
+        else:
+            async with AsyncSessionLocal() as session:
+                yield session
 
     def _emit(self, proposal: ActionProposal, preview: dict[str, Any]) -> str:
         self._run_ctx.record(
@@ -139,9 +159,9 @@ class ProposeExtendTrialTool(_WriteToolBase):
     )
     args_schema: type[BaseModel] = ExtendTrialArgs
 
-    def _run(self, user_id: str, game_slug: str, extra_days: int) -> str:
-        with SyncSessionLocal() as session:
-            m = MembershipsRepo(session).get_membership(
+    async def _run(self, user_id: str, game_slug: str, extra_days: int) -> str:
+        async with self._get_session() as session:
+            m = await MembershipsRepo(session).get_membership(
                 vendor_id=self._ctx.vendor_id, user_id=user_id, game_slug=game_slug
             )
             if m is None:
@@ -190,11 +210,11 @@ class ProposeExtendTrialTool(_WriteToolBase):
                     created_at=_utcnow(),
                 )
             )
-            session.commit()
+            await session.commit()
             return self._emit(proposal, preview)
 
 
-# ── update_membership_dates ────────────────────────────────────────────────────
+# ── update_membership_dates ──────────────────────────────────────────────────
 
 class ProposeUpdateMembershipDatesTool(_WriteToolBase):
     name: str = "propose_update_membership_dates"
@@ -204,15 +224,15 @@ class ProposeUpdateMembershipDatesTool(_WriteToolBase):
     )
     args_schema: type[BaseModel] = UpdateMembershipDatesArgs
 
-    def _run(
+    async def _run(
         self,
         user_id: str,
         game_slug: str,
         starts_at: Optional[str] = None,
         ends_at: Optional[str] = None,
     ) -> str:
-        with SyncSessionLocal() as session:
-            m = MembershipsRepo(session).get_membership(
+        async with self._get_session() as session:
+            m = await MembershipsRepo(session).get_membership(
                 vendor_id=self._ctx.vendor_id, user_id=user_id, game_slug=game_slug
             )
             if m is None:
@@ -262,7 +282,7 @@ class ProposeUpdateMembershipDatesTool(_WriteToolBase):
                     created_at=_utcnow(),
                 )
             )
-            session.commit()
+            await session.commit()
             return self._emit(proposal, preview)
 
 
@@ -276,14 +296,14 @@ class ProposeChangePlanTool(_WriteToolBase):
     )
     args_schema: type[BaseModel] = ChangePlanArgs
 
-    def _run(self, user_id: str, game_slug: str, new_plan: str) -> str:
+    async def _run(self, user_id: str, game_slug: str, new_plan: str) -> str:
         new_plan = (new_plan or "").strip().lower()
         if new_plan not in ("free", "trial", "basic", "pro"):
             return json.dumps(
                 {"error": "new_plan must be one of free|trial|basic|pro"}
             )
-        with SyncSessionLocal() as session:
-            m = MembershipsRepo(session).get_membership(
+        async with self._get_session() as session:
+            m = await MembershipsRepo(session).get_membership(
                 vendor_id=self._ctx.vendor_id, user_id=user_id, game_slug=game_slug
             )
             if m is None:
@@ -324,7 +344,7 @@ class ProposeChangePlanTool(_WriteToolBase):
                     created_at=_utcnow(),
                 )
             )
-            session.commit()
+            await session.commit()
             return self._emit(proposal, preview)
 
 
@@ -338,9 +358,9 @@ class ProposeSuspendUserTool(_WriteToolBase):
     )
     args_schema: type[BaseModel] = SuspendUserArgs
 
-    def _run(self, user_id: str, reason: str) -> str:
-        with SyncSessionLocal() as session:
-            u = UsersRepo(session).get_user(
+    async def _run(self, user_id: str, reason: str) -> str:
+        async with self._get_session() as session:
+            u = await UsersRepo(session).get_user(
                 vendor_id=self._ctx.vendor_id, user_id=user_id
             )
             if u is None:
@@ -378,7 +398,7 @@ class ProposeSuspendUserTool(_WriteToolBase):
                     created_at=_utcnow(),
                 )
             )
-            session.commit()
+            await session.commit()
             return self._emit(proposal, preview)
 
 
@@ -396,6 +416,7 @@ def build_write_tools(
     *,
     session_id: str | None = None,
     message_id: str | None = None,
+    db=None,
 ) -> list[BaseTool]:
     """Build propose_* tools closed over the authenticated vendor context."""
     tools: list[BaseTool] = []
@@ -405,11 +426,12 @@ def build_write_tools(
         instance._run_ctx = run_ctx
         instance._session_id = session_id
         instance._message_id = message_id
+        instance._db = db
         tools.append(instance)
     return tools
 
 
-def invoke_propose_tool_direct(
+async def invoke_propose_tool_direct(
     action: str,
     args: dict[str, Any],
     ctx: VendorContext,
@@ -429,15 +451,4 @@ def invoke_propose_tool_direct(
     if action not in tools:
         raise KeyError(f"Unknown propose tool: {action}")
     tool_obj = tools[action]
-    return tool_obj.run(**args)
-
-
-def _parse_dt(value: str | None):
-    if not value:
-        return None
-    try:
-        from datetime import datetime as _dt
-
-        return _dt.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
+    return await tool_obj._run(**args)

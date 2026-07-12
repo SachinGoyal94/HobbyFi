@@ -12,13 +12,14 @@ exposes ``.name`` and ``.run(**args)`` so the deterministic test path
 from __future__ import annotations
 
 import json
+from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 from crewai.tools.base_tool import BaseTool
 from pydantic import BaseModel, Field
 
 from app.agent.tools.registry import ToolRunContext
-from app.db.sync_session import SyncSessionLocal
+from app.db.session import AsyncSessionLocal
 from app.domain.repos.games import GamesRepo
 from app.domain.repos.memberships import MembershipsRepo
 from app.domain.repos.revenue import RevenueRepo
@@ -67,9 +68,21 @@ class _ReadToolBase(BaseTool):
     # Populated per-instance by build_read_tools
     _ctx: VendorContext
     _run_ctx: ToolRunContext
+    _db: Any = None
 
     def _record(self, tool: str, args: dict, result: Any, block: dict | None = None) -> None:
         self._run_ctx.record(tool, args, result, block=block)
+
+    @asynccontextmanager
+    async def _get_session(self):
+        if self._db:
+            # Use the passed session
+            async with self._db as session:
+                yield session
+        else:
+            # Fallback for tests / standalone
+            async with AsyncSessionLocal() as session:
+                yield session
 
 
 # ── Games ────────────────────────────────────────────────────────────────────
@@ -78,9 +91,9 @@ class ListGamesTool(_ReadToolBase):
     name: str = "list_games"
     description: str = "List games owned by the current vendor. No arguments."
 
-    def _run(self) -> str:
-        with SyncSessionLocal() as session:
-            rows = GamesRepo(session).list_games(vendor_id=self._ctx.vendor_id)
+    async def _run(self) -> str:
+        async with self._get_session() as session:
+            rows = await GamesRepo(session).list_games(vendor_id=self._ctx.vendor_id)
         self._record(
             "list_games",
             {},
@@ -107,10 +120,10 @@ class ListTrialUsersTool(_ReadToolBase):
     )
     args_schema: type[BaseModel] = ListTrialUsersArgs
 
-    def _run(self, game_slug: Optional[str] = None, limit: int = 20) -> str:
+    async def _run(self, game_slug: Optional[str] = None, limit: int = 20) -> str:
         limit = max(1, min(int(limit or 20), 50))
-        with SyncSessionLocal() as session:
-            rows = MembershipsRepo(session).list_trials(
+        async with self._get_session() as session:
+            rows = await MembershipsRepo(session).list_trials(
                 vendor_id=self._ctx.vendor_id, game_slug=game_slug, limit=limit
             )
         args = {"game_slug": game_slug, "limit": limit}
@@ -156,10 +169,10 @@ class GetRevenueTool(_ReadToolBase):
     )
     args_schema: type[BaseModel] = GetRevenueArgs
 
-    def _run(self, game_slug: Optional[str] = None) -> str:
+    async def _run(self, game_slug: Optional[str] = None) -> str:
         # Server resolves "today" from ctx.timezone — the LLM must NOT supply a date.
-        with SyncSessionLocal() as session:
-            result = RevenueRepo(session).get_revenue(
+        async with self._get_session() as session:
+            result = await RevenueRepo(session).get_revenue(
                 vendor_id=self._ctx.vendor_id,
                 day=None,
                 game_slug=game_slug,
@@ -196,10 +209,10 @@ class SearchUsersTool(_ReadToolBase):
     )
     args_schema: type[BaseModel] = SearchUsersArgs
 
-    def _run(self, query: str, limit: int = 20) -> str:
+    async def _run(self, query: str, limit: int = 20) -> str:
         limit = max(1, min(int(limit or 20), 50))
-        with SyncSessionLocal() as session:
-            rows = UsersRepo(session).search(
+        async with self._get_session() as session:
+            rows = await UsersRepo(session).search(
                 vendor_id=self._ctx.vendor_id, query=query, limit=limit
             )
         args = {"query": query, "limit": limit}
@@ -230,9 +243,9 @@ class GetUserTool(_ReadToolBase):
     )
     args_schema: type[BaseModel] = GetUserArgs
 
-    def _run(self, user_id: str) -> str:
-        with SyncSessionLocal() as session:
-            user = UsersRepo(session).get_user(
+    async def _run(self, user_id: str) -> str:
+        async with self._get_session() as session:
+            user = await UsersRepo(session).get_user(
                 vendor_id=self._ctx.vendor_id, user_id=user_id
             )
         self._record("get_user", {"user_id": user_id}, user)
@@ -250,9 +263,9 @@ class GetMembershipTool(_ReadToolBase):
     )
     args_schema: type[BaseModel] = GetMembershipArgs
 
-    def _run(self, user_id: str, game_slug: str) -> str:
-        with SyncSessionLocal() as session:
-            m = MembershipsRepo(session).get_membership(
+    async def _run(self, user_id: str, game_slug: str) -> str:
+        async with self._get_session() as session:
+            m = await MembershipsRepo(session).get_membership(
                 vendor_id=self._ctx.vendor_id,
                 user_id=user_id,
                 game_slug=game_slug,
@@ -280,10 +293,10 @@ class GetVendorSummaryTool(_ReadToolBase):
     )
     args_schema: type[BaseModel] = GetVendorSummaryArgs
 
-    def _run(self) -> str:
+    async def _run(self) -> str:
         # Server resolves "today" from ctx.timezone.
-        with SyncSessionLocal() as session:
-            summary = RevenueRepo(session).vendor_summary(
+        async with self._get_session() as session:
+            summary = await RevenueRepo(session).vendor_summary(
                 vendor_id=self._ctx.vendor_id,
                 day=None,
                 timezone_name=self._ctx.timezone,
@@ -317,18 +330,19 @@ _TOOL_CLASSES = [
 ]
 
 
-def build_read_tools(ctx: VendorContext, run_ctx: ToolRunContext) -> list[BaseTool]:
+def build_read_tools(ctx: VendorContext, run_ctx: ToolRunContext, db=None) -> list[BaseTool]:
     """Build CrewAI tools closed over the authenticated vendor context."""
     tools: list[BaseTool] = []
     for cls in _TOOL_CLASSES:
         instance = cls()
         instance._ctx = ctx
         instance._run_ctx = run_ctx
+        instance._db = db
         tools.append(instance)
     return tools
 
 
-def invoke_read_tool_direct(
+async def invoke_read_tool_direct(
     name: str,
     args: dict[str, Any],
     ctx: VendorContext,
@@ -340,4 +354,4 @@ def invoke_read_tool_direct(
     if name not in tools:
         raise KeyError(f"Unknown tool: {name}")
     tool_obj = tools[name]
-    return tool_obj.run(**args)
+    return await tool_obj._run(**args)

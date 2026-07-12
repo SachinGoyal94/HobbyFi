@@ -23,7 +23,7 @@ from app.main import create_app  # noqa: E402
 from app.services import chat_service  # noqa: E402
 
 
-def _mock_agent_runner(*, user_message: str, ctx, history=None) -> dict:
+async def _mock_agent_runner(*, user_message: str, ctx, history=None, session_id=None, message_id=None, db=None) -> dict:
     """Deterministic agent stub for API tests (no real Gemini / CrewAI)."""
     return {
         "text": f"Mock answer for: {user_message}",

@@ -16,18 +16,23 @@ from app.domain.schemas import VendorContext
 logger = logging.getLogger(__name__)
 
 # Injectable agent runner — tests replace this to avoid real Gemini calls.
-AgentRunner = Callable[..., dict[str, Any]]
+AgentRunner = Callable[..., Any]  # awaitable
 
 
-def _default_agent_runner(
+async def _default_agent_runner(
     *,
     user_message: str,
     ctx: VendorContext,
     history: list[dict[str, str]] | None = None,
+    session_id: str | None = None,
+    message_id: str | None = None,
+    db: AsyncSession | None = None,
 ) -> dict[str, Any]:
     from app.agent.crew import run_copilot_turn
 
-    return run_copilot_turn(user_message=user_message, ctx=ctx, history=history)
+    return await run_copilot_turn(
+        user_message=user_message, ctx=ctx, history=history, session_id=session_id, message_id=message_id, db=db
+    )
 
 
 _agent_runner: AgentRunner = _default_agent_runner
@@ -106,10 +111,13 @@ async def handle_user_message(
     prior = history[:-1] if history and history[-1]["role"] == "user" else history
 
     try:
-        agent_result = _agent_runner(
+        agent_result = await _agent_runner(
             user_message=content,
             ctx=ctx,
             history=prior,
+            session_id=session.id,
+            message_id=user_msg.id,
+            db=db,
         )
     except Exception as exc:
         logger.exception("agent_turn_failed session_id=%s", session.id)

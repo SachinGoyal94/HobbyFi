@@ -14,6 +14,7 @@ from app.config import get_settings
 from app.db.session import engine
 from app.domain.models import Base
 from app.domain.seed import seed_mock_data
+from app.services.proposal_expiry import start_expiry_task, stop_expiry_task
 
 
 @asynccontextmanager
@@ -37,9 +38,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger = logging.getLogger("app.lifespan")
         logger.info("Mock data seed counts: %s", counts)
 
-    yield
+    # Start background proposal expiry task
+    from app.services.proposal_expiry import start_expiry_task, stop_expiry_task
 
-    await engine.dispose()
+    start_expiry_task(interval_seconds=60)
+
+    try:
+        yield
+    finally:
+        await stop_expiry_task()
+        await engine.dispose()
 
 
 def create_app() -> FastAPI:
