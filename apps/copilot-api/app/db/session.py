@@ -13,9 +13,6 @@ settings = get_settings()
 engine = create_async_engine(
     settings.database_url,
     echo=settings.app_env == "development",
-    connect_args={"check_same_thread": False}
-    if settings.database_url.startswith("sqlite")
-    else {},
 )
 
 AsyncSessionLocal = async_sessionmaker(

@@ -1,4 +1,9 @@
-"""Background task to expire overdue proposals."""
+"""Background task to expire overdue proposals.
+
+This module provides a background task for expiring overdue proposals.
+In cloud/serverless environments, this should be run as a separate
+scheduled job (cron, Cloud Scheduler, etc.) rather than an in-process task.
+"""
 
 from __future__ import annotations
 
@@ -30,7 +35,12 @@ async def _expiry_loop(interval_seconds: int) -> None:
 
 
 def start_expiry_task(interval_seconds: int = 60) -> None:
-    """Start the background task that expires overdue proposals."""
+    """Start the background task that expires overdue proposals.
+
+    Note: In cloud/serverless deployments, disable this and use a scheduled
+    job (cron, Cloud Scheduler, etc.) that calls `expire_overdue_proposals()`
+    directly instead.
+    """
     global _expiry_task
     if _expiry_task is not None and not _expiry_task.done():
         return
@@ -49,3 +59,13 @@ async def stop_expiry_task() -> None:
             pass
         _expiry_task = None
         _log.info("Proposal expiry task stopped")
+
+
+async def run_expiry_once() -> int:
+    """Run a single expiry cycle. Useful for scheduled jobs."""
+    async with AsyncSessionLocal() as db:
+        count = await approval_service.expire_overdue_proposals(db)
+        if count:
+            await db.commit()
+            _log.info("Expired %d overdue proposals", count)
+        return count

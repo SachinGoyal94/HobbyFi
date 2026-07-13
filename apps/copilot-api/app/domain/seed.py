@@ -9,9 +9,11 @@ All test-expected IDs, counts, and values are preserved exactly.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from app.domain.models import (
     AppUser,
@@ -84,16 +86,8 @@ USER_LENA = "u_lena"
 
 # ════════════════════════════════════════════════════════════════════════════
 
-async def is_seeded(session: AsyncSession) -> bool:
-    count = await session.scalar(select(func.count()).select_from(Vendor))
-    return bool(count and count > 0)
-
-
-async def seed_mock_data(session: AsyncSession) -> dict[str, int]:
-    """Idempotent seed: no-op if vendors already exist."""
-    if await is_seeded(session):
-        return await _counts(session)
-
+def _populate_seed_data(session: Any) -> None:
+    """Add all seed rows via ``session.add_all`` (works for sync and async sessions)."""
     now = datetime.now(timezone.utc)
     today = date.today()
     yesterday = today - timedelta(days=1)
@@ -258,40 +252,62 @@ async def seed_mock_data(session: AsyncSession) -> dict[str, int]:
     # REVENUE DAILY — MUST MATCH TEST EXPECTATIONS EXACTLY
     # ═══════════════════════════════════════════════════════════════════════════
 
-    revenue_rows = []
-
-    # Acme Sports — TODAY (timezone Asia/Kolkata) — TEST EXPECTS: net_cents = 128_500
-    revenue_rows.append(RevenueDaily(
-        id="rev_acme_all_today", vendor_id=VENDOR_ACME, game_id=None,
-        day=today, currency="USD", gross_cents=132_000, refunds_cents=3_500, net_cents=128_500,
-    ))
-    # Acme — badminton today
-    revenue_rows.append(RevenueDaily(
-        id="rev_acme_badminton_today", vendor_id=VENDOR_ACME, game_id=GAME_BADMINTON,
-        day=today, currency="USD", gross_cents=45_000, refunds_cents=1_000, net_cents=44_000,
-    ))
-    # Acme — cricket today
-    revenue_rows.append(RevenueDaily(
-        id="rev_acme_cricket_today", vendor_id=VENDOR_ACME, game_id=GAME_CRICKET,
-        day=today, currency="USD", gross_cents=87_000, refunds_cents=2_500, net_cents=84_500,
-    ))
-
-    # Acme — YESTERDAY (not tested but kept for demo)
-    revenue_rows.append(RevenueDaily(
-        id="rev_acme_all_yesterday", vendor_id=VENDOR_ACME, game_id=None,
-        day=yesterday, currency="USD", gross_cents=110_000, refunds_cents=2_000, net_cents=108_000,
-    ))
-
-    # Beta Games Co — TODAY — TEST EXPECTS: net_cents = 9_900
-    revenue_rows.append(RevenueDaily(
-        id="rev_beta_today", vendor_id=VENDOR_BETA, game_id=None,
-        day=today, currency="USD", gross_cents=9_900, refunds_cents=0, net_cents=9_900,
-    ))
+    revenue_rows = [
+        # Acme Sports — TODAY — TEST EXPECTS: net_cents = 128_500
+        RevenueDaily(
+            id="rev_acme_all_today", vendor_id=VENDOR_ACME, game_id=None,
+            day=today, currency="USD", gross_cents=132_000, refunds_cents=3_500, net_cents=128_500,
+        ),
+        RevenueDaily(
+            id="rev_acme_badminton_today", vendor_id=VENDOR_ACME, game_id=GAME_BADMINTON,
+            day=today, currency="USD", gross_cents=45_000, refunds_cents=1_000, net_cents=44_000,
+        ),
+        RevenueDaily(
+            id="rev_acme_cricket_today", vendor_id=VENDOR_ACME, game_id=GAME_CRICKET,
+            day=today, currency="USD", gross_cents=87_000, refunds_cents=2_500, net_cents=84_500,
+        ),
+        RevenueDaily(
+            id="rev_acme_all_yesterday", vendor_id=VENDOR_ACME, game_id=None,
+            day=yesterday, currency="USD", gross_cents=110_000, refunds_cents=2_000, net_cents=108_000,
+        ),
+        # Beta Games Co — TODAY — TEST EXPECTS: net_cents = 9_900
+        RevenueDaily(
+            id="rev_beta_today", vendor_id=VENDOR_BETA, game_id=None,
+            day=today, currency="USD", gross_cents=9_900, refunds_cents=0, net_cents=9_900,
+        ),
+    ]
 
     session.add_all(revenue_rows)
 
+
+async def is_seeded(session: AsyncSession) -> bool:
+    count = await session.scalar(select(func.count()).select_from(Vendor))
+    return bool(count and count > 0)
+
+
+def is_seeded_sync(session: Session) -> bool:
+    count = session.scalar(select(func.count()).select_from(Vendor))
+    return bool(count and count > 0)
+
+
+async def seed_mock_data(session: AsyncSession) -> dict[str, int]:
+    """Idempotent seed: no-op if vendors already exist."""
+    if await is_seeded(session):
+        return await _counts(session)
+
+    _populate_seed_data(session)
     await session.flush()
     return await _counts(session)
+
+
+def seed_mock_data_sync(session: Session) -> dict[str, int]:
+    """Sync variant of :func:`seed_mock_data` for tests / CLI scripts."""
+    if is_seeded_sync(session):
+        return _counts_sync(session)
+
+    _populate_seed_data(session)
+    session.flush()
+    return _counts_sync(session)
 
 
 async def _counts(session: AsyncSession) -> dict[str, int]:
@@ -302,4 +318,15 @@ async def _counts(session: AsyncSession) -> dict[str, int]:
         "app_users": int(await session.scalar(select(func.count()).select_from(AppUser)) or 0),
         "memberships": int(await session.scalar(select(func.count()).select_from(Membership)) or 0),
         "revenue_rows": int(await session.scalar(select(func.count()).select_from(RevenueDaily)) or 0),
+    }
+
+
+def _counts_sync(session: Session) -> dict[str, int]:
+    return {
+        "vendors": int(session.scalar(select(func.count()).select_from(Vendor)) or 0),
+        "vendor_users": int(session.scalar(select(func.count()).select_from(VendorUser)) or 0),
+        "games": int(session.scalar(select(func.count()).select_from(Game)) or 0),
+        "app_users": int(session.scalar(select(func.count()).select_from(AppUser)) or 0),
+        "memberships": int(session.scalar(select(func.count()).select_from(Membership)) or 0),
+        "revenue_rows": int(session.scalar(select(func.count()).select_from(RevenueDaily)) or 0),
     }

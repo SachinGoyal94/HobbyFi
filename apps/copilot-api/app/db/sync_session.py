@@ -9,21 +9,13 @@ from __future__ import annotations
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.config import get_settings
+from app.config import get_settings, to_sync_database_url
 
 _settings = get_settings()
 
 
-def _to_sync_url(url: str) -> str:
-    if url.startswith("sqlite+aiosqlite://"):
-        return url.replace("sqlite+aiosqlite://", "sqlite://", 1)
-    if url.startswith("postgresql+asyncpg://"):
-        return url.replace("postgresql+asyncpg://", "postgresql://", 1)
-    return url
-
-
 sync_engine = create_engine(
-    _to_sync_url(_settings.database_url),
+    to_sync_database_url(_settings.database_url),
     echo=_settings.app_env == "development",
     connect_args={"check_same_thread": False}
     if _settings.database_url.startswith("sqlite")

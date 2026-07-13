@@ -31,7 +31,7 @@ class Vendor(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=_utcnow, server_default=func.now()
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
     )
 
     vendor_users: Mapped[list[VendorUser]] = relationship(back_populates="vendor")
@@ -48,7 +48,7 @@ class VendorUser(Base):
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(32), nullable=False)  # owner|admin|support|viewer
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=_utcnow, server_default=func.now()
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
     )
 
     vendor: Mapped[Vendor] = relationship(back_populates="vendor_users")
@@ -78,7 +78,7 @@ class AppUser(Base):
     display_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=_utcnow, server_default=func.now()
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
     )
 
     memberships: Mapped[list[Membership]] = relationship(back_populates="user")
@@ -99,9 +99,9 @@ class Membership(Base):
         String(64), ForeignKey("games.id"), nullable=False, index=True
     )
     plan: Mapped[str] = mapped_column(String(32), nullable=False)  # free|trial|basic|pro
-    starts_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    trial_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    trial_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
 
     user: Mapped[AppUser] = relationship(back_populates="memberships")
@@ -133,7 +133,7 @@ class ChatSession(Base):
     vendor_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     vendor_user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=_utcnow, server_default=func.now()
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
     )
 
     messages: Mapped[list[ChatMessage]] = relationship(
@@ -151,7 +151,7 @@ class ChatMessage(Base):
     role: Mapped[str] = mapped_column(String(32), nullable=False)  # user|assistant|tool|system
     content: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=_utcnow, server_default=func.now()
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
     )
 
     session: Mapped[ChatSession] = relationship(back_populates="messages")
@@ -170,12 +170,12 @@ class ActionProposal(Base):
     preview: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
-    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     decided_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     execution_result: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=_utcnow, server_default=func.now()
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
     )
 
 
@@ -190,7 +190,7 @@ class AuditEvent(Base):
     entity_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=_utcnow, server_default=func.now()
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
     )
 
 

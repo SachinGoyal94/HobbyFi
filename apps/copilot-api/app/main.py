@@ -44,15 +44,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger = logging.getLogger("app.lifespan")
         logger.info("Mock data seed counts: %s", counts)
 
-    # Start background proposal expiry task
-    from app.services.proposal_expiry import start_expiry_task, stop_expiry_task
+        # Start background proposal expiry task (dev only)
+        from app.services.proposal_expiry import start_expiry_task, stop_expiry_task
 
-    start_expiry_task(interval_seconds=60)
+        start_expiry_task(interval_seconds=60)
 
     try:
         yield
     finally:
-        await stop_expiry_task()
+        if settings.app_env == "development":
+            await stop_expiry_task()
         await engine.dispose()
 
 
