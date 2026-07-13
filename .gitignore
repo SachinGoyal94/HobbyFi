@@ -82,3 +82,4 @@ apps/copilot-api/Lib/
 apps/copilot-api/Include/
 apps/copilot-api/Scripts/
 apps/copilot-api/pyvenv.cfg
+bash.exe.stackdump
