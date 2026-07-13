@@ -126,9 +126,9 @@ class _WriteToolBase(BaseTool):
 
     @asynccontextmanager
     async def _get_session(self):
-        if self._db:
-            async with self._db as session:
-                yield session
+        if self._db is not None:
+            # Caller-owned session — do not close/rollback on exit.
+            yield self._db
         else:
             async with AsyncSessionLocal() as session:
                 yield session

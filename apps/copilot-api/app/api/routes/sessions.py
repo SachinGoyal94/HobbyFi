@@ -159,6 +159,7 @@ async def post_message_stream(
             {
                 "text": content.get("text", ""),
                 "blocks": content.get("blocks", []),
+                "tool_traces": content.get("tool_traces", []),
                 "user_message_id": user_msg.id,
                 "assistant_message_id": assistant_msg.id,
             },

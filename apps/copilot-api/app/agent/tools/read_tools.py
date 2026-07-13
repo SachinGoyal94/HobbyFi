@@ -85,12 +85,13 @@ class _ReadToolBase(BaseTool):
 
     @asynccontextmanager
     async def _get_session(self):
-        if self._db:
-            # Use the passed session
-            async with self._db as session:
-                yield session
+        if self._db is not None:
+            # Caller-owned session (e.g. request scope). Must NOT enter it as a
+            # context manager — AsyncSession.__aexit__ closes/rolls back, which
+            # would wipe uncommitted chat rows on the shared unit of work.
+            yield self._db
         else:
-            # Fallback for tests / standalone
+            # Standalone path (tests / CrewAI without a request session)
             async with AsyncSessionLocal() as session:
                 yield session
 
