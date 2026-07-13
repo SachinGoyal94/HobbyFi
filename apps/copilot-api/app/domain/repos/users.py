@@ -19,23 +19,21 @@ class UsersRepo:
         limit: int = 20,
     ) -> list[dict]:
         q = query.strip()
-        if not q:
-            return []
         limit = max(1, min(limit, 50))
-        pattern = f"%{q}%"
-        rows = (await self._session.scalars(
-            select(AppUser)
-            .where(
-                AppUser.vendor_id == vendor_id,
+        
+        stmt = select(AppUser).where(AppUser.vendor_id == vendor_id)
+        if q:
+            pattern = f"%{q}%"
+            stmt = stmt.where(
                 or_(
                     AppUser.id.ilike(pattern),
                     AppUser.email.ilike(pattern),
                     AppUser.display_name.ilike(pattern),
-                ),
+                )
             )
-            .order_by(AppUser.id.asc())
-            .limit(limit)
-        )).all()
+            
+        stmt = stmt.order_by(AppUser.id.asc()).limit(limit)
+        rows = (await self._session.scalars(stmt)).all()
         return [_user_dict(u) for u in rows]
 
     async def get_user(self, *, vendor_id: str, user_id: str) -> dict | None:

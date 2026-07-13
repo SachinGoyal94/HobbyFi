@@ -1,14 +1,11 @@
 """Vendor-scoped propose_* (write) tools for the copilot agent.
 
-IMPORTANT (plan §2 / §5.2): these tools NEVER mutate domain data. Each one
-builds a ``before``/``after`` preview from current state and inserts a pending
-``ActionProposal`` row. Execution happens later, server-side, only after a
-vendor approves via the authenticated FastAPI decide endpoint — the LLM can
-never call that endpoint (see approval_service + proposals routes).
+IMPORTANT: these tools NEVER mutate domain data. Each one builds a
+``before``/``after`` preview and inserts a pending ``ActionProposal`` row.
 
-Tools are CrewAI ``BaseTool`` subclasses with explicit Pydantic args schemas
-(same approach as read_tools to avoid the Pydantic 2.12 schema-build issue).
-``vendor_id`` is always taken from ``VendorContext``.
+Async execution model matches read_tools: ``_execute`` is the real async body,
+``to_structured_tool`` exposes it to CrewAI's ``ainvoke``, and sync ``_run`` is
+a NullPool-safe bridge for rare sync callers.
 """
 
 from __future__ import annotations
@@ -20,12 +17,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from crewai.tools.base_tool import BaseTool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
+from app.agent.tools.async_bridge import run_coro_sync
 from app.agent.tools.registry import ToolRunContext
 from app.agent.tools.rbac import check_tool_permission
 from app.config import get_settings
-from app.db.session import AsyncSessionLocal
 from app.domain.models import ActionProposal, AuditEvent
 from app.domain.repos.memberships import MembershipsRepo
 from app.domain.repos.users import UsersRepo
@@ -51,19 +50,17 @@ def _parse_dt(value: str | None) -> datetime | None:
         return None
 
 
-def _proposal_payload(
+def _make_proposal(
     *,
     ctx: VendorContext,
     action_type: str,
     payload: dict[str, Any],
     preview: dict[str, Any],
-    run_ctx: ToolRunContext,
     session_id: str | None = None,
     message_id: str | None = None,
 ) -> ActionProposal:
-    """Insert a pending proposal and record an audit event. Caller commits."""
     now = _utcnow()
-    proposal = ActionProposal(
+    return ActionProposal(
         id=_new_id("ap"),
         vendor_id=ctx.vendor_id,
         session_id=session_id,
@@ -77,7 +74,29 @@ def _proposal_payload(
         expires_at=now + timedelta(minutes=_settings.proposal_ttl_minutes),
         created_at=now,
     )
-    return proposal
+
+
+@asynccontextmanager
+async def _tool_session():
+    settings = get_settings()
+    engine = create_async_engine(
+        settings.database_url,
+        poolclass=NullPool,
+        echo=False,
+    )
+    factory = async_sessionmaker(
+        engine, class_=AsyncSession, expire_on_commit=False, autoflush=False
+    )
+    try:
+        async with factory() as session:
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+    finally:
+        await engine.dispose()
 
 
 # ── Args schemas ─────────────────────────────────────────────────────────────
@@ -109,29 +128,38 @@ class SuspendUserArgs(BaseModel):
 # ── Tool base ────────────────────────────────────────────────────────────────
 
 class _WriteToolBase(BaseTool):
-    _ctx: VendorContext
-    _run_ctx: ToolRunContext
-    _session_id: Optional[str]
-    _message_id: Optional[str]
-    _db: Any = None
+    _ctx: Any = PrivateAttr(default=None)
+    _run_ctx: Any = PrivateAttr(default=None)
+    _session_id: Optional[str] = PrivateAttr(default=None)
+    _message_id: Optional[str] = PrivateAttr(default=None)
 
     def _check_permission(self) -> str | None:
-        """Return error JSON if role not allowed, else None."""
-        from app.agent.tools.rbac import check_tool_permission
         if not check_tool_permission(self.name, self._ctx.role):
             return json.dumps({
                 "error": f"Role '{self._ctx.role}' not authorized to use tool '{self.name}'",
             })
         return None
 
-    @asynccontextmanager
-    async def _get_session(self):
-        if self._db is not None:
-            # Caller-owned session — do not close/rollback on exit.
-            yield self._db
-        else:
-            async with AsyncSessionLocal() as session:
-                yield session
+    def _sync_bridge(self, coro):
+        return run_coro_sync(coro)
+
+    def to_structured_tool(self):
+        from crewai.tools.structured_tool import CrewStructuredTool
+
+        self._set_args_schema()
+        structured = CrewStructuredTool(
+            name=self.name,
+            description=self.description,
+            args_schema=self.args_schema,
+            result_schema=self.result_schema,
+            func=self._execute,
+            result_as_answer=self.result_as_answer,
+            max_usage_count=self.max_usage_count,
+            current_usage_count=self.current_usage_count,
+            cache_function=self.cache_function,
+        )
+        structured._original_tool = self
+        return structured
 
     def _emit(self, proposal: ActionProposal, preview: dict[str, Any]) -> str:
         self._run_ctx.record(
@@ -169,8 +197,20 @@ class ProposeExtendTrialTool(_WriteToolBase):
     )
     args_schema: type[BaseModel] = ExtendTrialArgs
 
-    async def _run(self, user_id: str, game_slug: str, extra_days: int) -> str:
-        async with self._get_session() as session:
+    def _run(self, user_id: str, game_slug: str, extra_days: int) -> str:
+        return self._sync_bridge(
+            self._execute(user_id=user_id, game_slug=game_slug, extra_days=extra_days)
+        )
+
+    async def _arun(self, user_id: str, game_slug: str, extra_days: int) -> str:
+        return await self._execute(
+            user_id=user_id, game_slug=game_slug, extra_days=extra_days
+        )
+
+    async def _execute(self, user_id: str, game_slug: str, extra_days: int) -> str:
+        if err := self._check_permission():
+            return err
+        async with _tool_session() as session:
             m = await MembershipsRepo(session).get_membership(
                 vendor_id=self._ctx.vendor_id, user_id=user_id, game_slug=game_slug
             )
@@ -179,11 +219,10 @@ class ProposeExtendTrialTool(_WriteToolBase):
                     {"error": f"No membership for user '{user_id}' on '{game_slug}'"}
                 )
             current = m.get("trial_ends_at")
-            new_trial_ends = (
-                _parse_dt(current) + timedelta(days=int(extra_days))
-                if current
-                else _utcnow() + timedelta(days=int(extra_days))
-            )
+            base = _parse_dt(current) if current else _utcnow()
+            if base is not None and base.tzinfo is None:
+                base = base.replace(tzinfo=timezone.utc)
+            new_trial_ends = (base or _utcnow()) + timedelta(days=int(extra_days))
             preview = {
                 "user_id": user_id,
                 "game_slug": game_slug,
@@ -198,12 +237,11 @@ class ProposeExtendTrialTool(_WriteToolBase):
                 "current_trial_ends_at": current,
                 "new_trial_ends_at": new_trial_ends.isoformat(),
             }
-            proposal = _proposal_payload(
+            proposal = _make_proposal(
                 ctx=self._ctx,
                 action_type="extend_trial",
                 payload=payload,
                 preview=preview,
-                run_ctx=self._run_ctx,
                 session_id=self._session_id,
                 message_id=self._message_id,
             )
@@ -220,7 +258,6 @@ class ProposeExtendTrialTool(_WriteToolBase):
                     created_at=_utcnow(),
                 )
             )
-            await session.commit()
             return self._emit(proposal, preview)
 
 
@@ -234,14 +271,46 @@ class ProposeUpdateMembershipDatesTool(_WriteToolBase):
     )
     args_schema: type[BaseModel] = UpdateMembershipDatesArgs
 
-    async def _run(
+    def _run(
         self,
         user_id: str,
         game_slug: str,
         starts_at: Optional[str] = None,
         ends_at: Optional[str] = None,
     ) -> str:
-        async with self._get_session() as session:
+        return self._sync_bridge(
+            self._execute(
+                user_id=user_id,
+                game_slug=game_slug,
+                starts_at=starts_at,
+                ends_at=ends_at,
+            )
+        )
+
+    async def _arun(
+        self,
+        user_id: str,
+        game_slug: str,
+        starts_at: Optional[str] = None,
+        ends_at: Optional[str] = None,
+    ) -> str:
+        return await self._execute(
+            user_id=user_id,
+            game_slug=game_slug,
+            starts_at=starts_at,
+            ends_at=ends_at,
+        )
+
+    async def _execute(
+        self,
+        user_id: str,
+        game_slug: str,
+        starts_at: Optional[str] = None,
+        ends_at: Optional[str] = None,
+    ) -> str:
+        if err := self._check_permission():
+            return err
+        async with _tool_session() as session:
             m = await MembershipsRepo(session).get_membership(
                 vendor_id=self._ctx.vendor_id, user_id=user_id, game_slug=game_slug
             )
@@ -270,12 +339,11 @@ class ProposeUpdateMembershipDatesTool(_WriteToolBase):
                 "starts_at": new_start.isoformat() if new_start else None,
                 "ends_at": new_end.isoformat() if new_end else None,
             }
-            proposal = _proposal_payload(
+            proposal = _make_proposal(
                 ctx=self._ctx,
                 action_type="update_membership_dates",
                 payload=payload,
                 preview=preview,
-                run_ctx=self._run_ctx,
                 session_id=self._session_id,
                 message_id=self._message_id,
             )
@@ -288,11 +356,13 @@ class ProposeUpdateMembershipDatesTool(_WriteToolBase):
                     event_type="proposal.create",
                     entity_type="action_proposal",
                     entity_id=proposal.id,
-                    metadata_json={"action_type": "update_membership_dates", "payload": payload},
+                    metadata_json={
+                        "action_type": "update_membership_dates",
+                        "payload": payload,
+                    },
                     created_at=_utcnow(),
                 )
             )
-            await session.commit()
             return self._emit(proposal, preview)
 
 
@@ -306,13 +376,25 @@ class ProposeChangePlanTool(_WriteToolBase):
     )
     args_schema: type[BaseModel] = ChangePlanArgs
 
-    async def _run(self, user_id: str, game_slug: str, new_plan: str) -> str:
+    def _run(self, user_id: str, game_slug: str, new_plan: str) -> str:
+        return self._sync_bridge(
+            self._execute(user_id=user_id, game_slug=game_slug, new_plan=new_plan)
+        )
+
+    async def _arun(self, user_id: str, game_slug: str, new_plan: str) -> str:
+        return await self._execute(
+            user_id=user_id, game_slug=game_slug, new_plan=new_plan
+        )
+
+    async def _execute(self, user_id: str, game_slug: str, new_plan: str) -> str:
+        if err := self._check_permission():
+            return err
         new_plan = (new_plan or "").strip().lower()
         if new_plan not in ("free", "trial", "basic", "pro"):
             return json.dumps(
                 {"error": "new_plan must be one of free|trial|basic|pro"}
             )
-        async with self._get_session() as session:
+        async with _tool_session() as session:
             m = await MembershipsRepo(session).get_membership(
                 vendor_id=self._ctx.vendor_id, user_id=user_id, game_slug=game_slug
             )
@@ -332,12 +414,11 @@ class ProposeChangePlanTool(_WriteToolBase):
                 "new_plan": new_plan,
                 "current_plan": m.get("plan"),
             }
-            proposal = _proposal_payload(
+            proposal = _make_proposal(
                 ctx=self._ctx,
                 action_type="change_plan",
                 payload=payload,
                 preview=preview,
-                run_ctx=self._run_ctx,
                 session_id=self._session_id,
                 message_id=self._message_id,
             )
@@ -354,7 +435,6 @@ class ProposeChangePlanTool(_WriteToolBase):
                     created_at=_utcnow(),
                 )
             )
-            await session.commit()
             return self._emit(proposal, preview)
 
 
@@ -368,8 +448,16 @@ class ProposeSuspendUserTool(_WriteToolBase):
     )
     args_schema: type[BaseModel] = SuspendUserArgs
 
-    async def _run(self, user_id: str, reason: str) -> str:
-        async with self._get_session() as session:
+    def _run(self, user_id: str, reason: str) -> str:
+        return self._sync_bridge(self._execute(user_id=user_id, reason=reason))
+
+    async def _arun(self, user_id: str, reason: str) -> str:
+        return await self._execute(user_id=user_id, reason=reason)
+
+    async def _execute(self, user_id: str, reason: str) -> str:
+        if err := self._check_permission():
+            return err
+        async with _tool_session() as session:
             u = await UsersRepo(session).get_user(
                 vendor_id=self._ctx.vendor_id, user_id=user_id
             )
@@ -386,12 +474,11 @@ class ProposeSuspendUserTool(_WriteToolBase):
                 "reason": reason,
                 "current_status": u.get("status"),
             }
-            proposal = _proposal_payload(
+            proposal = _make_proposal(
                 ctx=self._ctx,
                 action_type="suspend_user",
                 payload=payload,
                 preview=preview,
-                run_ctx=self._run_ctx,
                 session_id=self._session_id,
                 message_id=self._message_id,
             )
@@ -408,7 +495,6 @@ class ProposeSuspendUserTool(_WriteToolBase):
                     created_at=_utcnow(),
                 )
             )
-            await session.commit()
             return self._emit(proposal, preview)
 
 
@@ -428,7 +514,7 @@ def build_write_tools(
     message_id: str | None = None,
     db=None,
 ) -> list[BaseTool]:
-    """Build propose_* tools closed over the authenticated vendor context."""
+    del db
     tools: list[BaseTool] = []
     for cls in _WRITE_TOOL_CLASSES:
         instance = cls()
@@ -436,7 +522,6 @@ def build_write_tools(
         instance._run_ctx = run_ctx
         instance._session_id = session_id
         instance._message_id = message_id
-        instance._db = db
         tools.append(instance)
     return tools
 
@@ -451,15 +536,14 @@ async def invoke_propose_tool_direct(
     message_id: str | None = None,
     db=None,
 ) -> str:
-    """Call a propose_* tool by name without the agent (tests / deterministic path)."""
+    del db
     run_ctx = run_ctx or ToolRunContext()
     tools = {
         t.name: t
         for t in build_write_tools(
-            ctx, run_ctx, session_id=session_id, message_id=message_id, db=db
+            ctx, run_ctx, session_id=session_id, message_id=message_id
         )
     }
     if action not in tools:
         raise KeyError(f"Unknown propose tool: {action}")
-    tool_obj = tools[action]
-    return await tool_obj._run(**args)
+    return await tools[action]._execute(**args)
