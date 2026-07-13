@@ -18,7 +18,7 @@ async def test_health_ok(client: AsyncClient):
     body = resp.json()
     assert body["status"] == "ok"
     assert body["app"] == "HobbyFi Vendor Copilot API"
-    assert body["database"] == "sqlite"
+    assert body["database"] == "postgresql"
     assert body["gemini_configured"] is True
     assert body["version"] == "0.1.0"
 
