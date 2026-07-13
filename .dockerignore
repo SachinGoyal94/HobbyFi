@@ -1,0 +1,63 @@
+# Docker
+Dockerfile
+.dockerignore
+*.dockerfile
+
+# Build outputs
+dist/
+build/
+*.egg-info/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg
+pip-wheel-metadata/
+.uv/
+uv.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tests
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local development files
+.env
+.env.local
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+logs/
+*.log
+
+# Frontend
+apps/frontend/node_modules/
+apps/frontend/dist/
+apps/frontend/dist-ssr/
+apps/frontend/.vite/
+apps/frontend/.turbo/
+apps/frontend/*.local
+
+# Copilot API venv (Windows)
+apps/copilot-api/Lib/
+apps/copilot-api/Include/
+apps/copilot-api/Scripts/
+apps/copilot-api/pyvenv.cfg
+apps/copilot-api/copilot_mock.db
+apps/copilot-api/Default
