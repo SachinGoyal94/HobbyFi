@@ -1,13 +1,24 @@
 /**
  * API client for HobbyFi Copilot backend.
  *
- * Auth is via stub headers (Phase 0):
- *   x-vendor-id, x-vendor-user-id, x-vendor-role
+ * Auth via stub headers (demo): x-vendor-id, x-vendor-user-id, x-vendor-role
  *
- * Vite proxy forwards /v1 → http://localhost:8000
+ * Base URL:
+ *   - Dev: empty → relative /v1 (Vite proxy → localhost:8000)
+ *   - Prod: set VITE_API_BASE_URL (e.g. https://api.example.com)
  */
 
-// ── Auth Context (injected per-request) ───────────────────
+// ── Config ────────────────────────────────────────────────
+
+const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') || ''
+
+function url(path: string): string {
+  if (path.startsWith('http')) return path
+  return `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`
+}
+
+// ── Auth Context ──────────────────────────────────────────
+
 export interface AuthHeaders {
   'x-vendor-id': string
   'x-vendor-user-id': string
@@ -21,47 +32,75 @@ let _authHeaders: AuthHeaders = {
 }
 
 export function setAuthHeaders(headers: AuthHeaders) {
-  _authHeaders = headers
+  _authHeaders = { ...headers }
 }
 
 export function getAuthHeaders(): AuthHeaders {
   return { ..._authHeaders }
 }
 
-// ── Fetch wrapper with auth ───────────────────────────────
-async function apiFetch<T = any>(
-  path: string,
-  options: RequestInit = {},
-): Promise<T> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ..._authHeaders,
-    ...(options.headers as Record<string, string> || {}),
-  }
-
-  const res = await fetch(path, { ...options, headers })
-
-  if (!res.ok) {
-    const body = await res.text()
-    let detail = `API error ${res.status}`
-    try {
-      const json = JSON.parse(body)
-      detail = json.detail || detail
-    } catch { /* text fallback */ }
-    throw new ApiError(res.status, detail)
-  }
-
-  return res.json()
-}
+// ── Errors ────────────────────────────────────────────────
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(
+    public status: number,
+    message: string,
+    public body?: unknown,
+  ) {
     super(message)
     this.name = 'ApiError'
   }
 }
 
-// ── Health ─────────────────────────────────────────────────
+function parseDetail(body: string, status: number): { message: string; parsed?: unknown } {
+  let detail = `API error ${status}`
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body)
+    if (parsed && typeof parsed === 'object' && 'detail' in parsed) {
+      const d = (parsed as { detail: unknown }).detail
+      if (typeof d === 'string') detail = d
+      else if (Array.isArray(d)) {
+        detail = d
+          .map((x) => (typeof x === 'object' && x && 'msg' in x ? String((x as { msg: string }).msg) : JSON.stringify(x)))
+          .join('; ')
+      } else detail = JSON.stringify(d)
+    }
+  } catch {
+    if (body.trim()) detail = body.slice(0, 200)
+  }
+  return { message: detail, parsed }
+}
+
+// ── Fetch wrapper ─────────────────────────────────────────
+
+async function apiFetch<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+    ..._authHeaders,
+    ...(options.headers as Record<string, string> | undefined),
+  }
+
+  let res: Response
+  try {
+    res = await fetch(url(path), { ...options, headers })
+  } catch (err) {
+    throw new ApiError(0, err instanceof Error ? err.message : 'Network error — is the API running?')
+  }
+
+  if (!res.ok) {
+    const body = await res.text()
+    const { message, parsed } = parseDetail(body, res.status)
+    throw new ApiError(res.status, message, parsed)
+  }
+
+  if (res.status === 204) return undefined as T
+  return res.json() as Promise<T>
+}
+
+// ── Health ────────────────────────────────────────────────
+
 export interface HealthResponse {
   status: string
   app: string
@@ -77,6 +116,7 @@ export async function checkHealth(): Promise<HealthResponse> {
 }
 
 // ── Sessions ──────────────────────────────────────────────
+
 export interface SessionResponse {
   id: string
   vendor_id: string
@@ -88,7 +128,7 @@ export interface MessageResponse {
   id: string
   session_id: string
   role: 'user' | 'assistant' | 'tool' | 'system'
-  content: Record<string, any>
+  content: Record<string, unknown>
   created_at: string
 }
 
@@ -103,7 +143,7 @@ export interface MessageListResponse {
   messages: MessageResponse[]
 }
 
-export async function createSession(metadata: Record<string, any> = {}): Promise<SessionResponse> {
+export async function createSession(metadata: Record<string, unknown> = {}): Promise<SessionResponse> {
   return apiFetch<SessionResponse>('/v1/copilot/sessions', {
     method: 'POST',
     body: JSON.stringify({ metadata }),
@@ -125,36 +165,57 @@ export async function sendMessage(sessionId: string, content: string): Promise<T
   })
 }
 
+export type StreamEvent =
+  | { event: 'status'; data: { phase: string } }
+  | {
+      event: 'result'
+      data: {
+        text?: string
+        blocks?: unknown[]
+        tool_traces?: unknown[]
+        user_message_id?: string
+        assistant_message_id?: string
+      }
+    }
+  | { event: 'done'; data: { message_id?: string; session_id?: string } }
+  | { event: string; data: Record<string, unknown> }
+
 /**
- * Send a message via SSE streaming.
- * Returns an async generator that yields events:
- *   { event: 'status', data: { phase: 'routing' | 'running' } }
- *   { event: 'result', data: { text, blocks, user_message_id, assistant_message_id } }
- *   { event: 'done', data: { message_id, session_id } }
+ * SSE stream for a chat turn.
+ * Yields status → result → done (backend Phase 1 pattern).
  */
 export async function* sendMessageStream(
   sessionId: string,
   content: string,
-): AsyncGenerator<{ event: string; data: any }> {
+): AsyncGenerator<StreamEvent> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
+    Accept: 'text/event-stream',
     ..._authHeaders,
   }
 
-  const res = await fetch(`/v1/copilot/sessions/${sessionId}/messages:stream`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ content }),
-  })
+  let res: Response
+  try {
+    res = await fetch(url(`/v1/copilot/sessions/${sessionId}/messages:stream`), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ content }),
+    })
+  } catch (err) {
+    throw new ApiError(0, err instanceof Error ? err.message : 'Network error during stream')
+  }
 
   if (!res.ok) {
     const body = await res.text()
-    let detail = `SSE error ${res.status}`
-    try { detail = JSON.parse(body).detail || detail } catch { /* ok */ }
-    throw new ApiError(res.status, detail)
+    const { message, parsed } = parseDetail(body, res.status)
+    throw new ApiError(res.status, message, parsed)
   }
 
-  const reader = res.body!.getReader()
+  if (!res.body) {
+    throw new ApiError(0, 'Streaming not supported by this browser/proxy')
+  }
+
+  const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
 
@@ -172,13 +233,13 @@ export async function* sendMessageStream(
       let data = ''
 
       for (const line of lines) {
-        if (line.startsWith('event: ')) event = line.slice(7)
-        else if (line.startsWith('data: ')) data = line.slice(6)
+        if (line.startsWith('event:')) event = line.slice(6).trim()
+        else if (line.startsWith('data:')) data = line.slice(5).trim()
       }
 
       if (event && data) {
         try {
-          yield { event, data: JSON.parse(data) }
+          yield { event, data: JSON.parse(data) } as StreamEvent
         } catch {
           yield { event, data: {} }
         }
@@ -188,6 +249,7 @@ export async function* sendMessageStream(
 }
 
 // ── Proposals ─────────────────────────────────────────────
+
 export interface ProposalResponse {
   id: string
   vendor_id: string
@@ -195,14 +257,14 @@ export interface ProposalResponse {
   message_id: string | null
   proposed_by: string
   action_type: string
-  payload: Record<string, any>
-  preview: Record<string, any>
+  payload: Record<string, unknown>
+  preview: Record<string, unknown>
   status: string
   idempotency_key: string
   expires_at: string
   decided_by: string | null
   decided_at: string | null
-  execution_result: Record<string, any> | null
+  execution_result: Record<string, unknown> | null
   created_at: string
 }
 
@@ -212,12 +274,12 @@ export interface ProposalListResponse {
 }
 
 export async function listProposals(status?: string): Promise<ProposalListResponse> {
-  const q = status ? `?status=${status}` : ''
+  const q = status ? `?status=${encodeURIComponent(status)}` : ''
   return apiFetch<ProposalListResponse>(`/v1/copilot/proposals${q}`)
 }
 
 export async function getProposal(proposalId: string): Promise<ProposalResponse> {
-  return apiFetch<ProposalResponse>(`/v1/copilot/proposals/${proposalId}`)
+  return apiFetch<ProposalResponse>(`/v1/copilot/proposals/${encodeURIComponent(proposalId)}`)
 }
 
 export async function decideProposal(
@@ -225,13 +287,17 @@ export async function decideProposal(
   decision: 'approve' | 'reject',
   reason?: string,
 ): Promise<ProposalResponse> {
-  return apiFetch<ProposalResponse>(`/v1/copilot/proposals/${proposalId}/decide`, {
-    method: 'POST',
-    body: JSON.stringify({ decision, reason: reason || null }),
-  })
+  return apiFetch<ProposalResponse>(
+    `/v1/copilot/proposals/${encodeURIComponent(proposalId)}/decide`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ decision, reason: reason || null }),
+    },
+  )
 }
 
 // ── Audit ─────────────────────────────────────────────────
+
 export interface AuditEventResponse {
   id: string
   vendor_id: string
@@ -239,7 +305,7 @@ export interface AuditEventResponse {
   event_type: string
   entity_type: string | null
   entity_id: string | null
-  metadata: Record<string, any>
+  metadata: Record<string, unknown>
   created_at: string
 }
 
@@ -252,7 +318,8 @@ export async function listAudit(limit = 100): Promise<AuditListResponse> {
   return apiFetch<AuditListResponse>(`/v1/copilot/audit?limit=${limit}`)
 }
 
-// ── Vendor Context (whoami) ───────────────────────────────
+// ── Vendor context ────────────────────────────────────────
+
 export interface VendorContextResponse {
   vendor_id: string
   vendor_user_id: string
@@ -267,6 +334,9 @@ export async function whoami(): Promise<VendorContextResponse> {
 }
 
 // ── Admin ─────────────────────────────────────────────────
-export async function reseedData(): Promise<any> {
+
+export async function reseedData(): Promise<Record<string, number>> {
   return apiFetch('/v1/admin/seed', { method: 'POST' })
 }
+
+export { API_BASE }

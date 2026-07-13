@@ -1,48 +1,56 @@
 import { create } from 'zustand'
+import type { AuditEvent, ChatMessage, Proposal, Role, Vendor, VendorUser } from '../types'
 import {
-  type Vendor, type VendorUser, type Proposal, type AuditEvent, type ChatMessage,
-  type Role,
-  vendors, operatorsByVendor,
-  newId,
-} from '../data/mockData'
+  DEFAULT_OPERATOR,
+  DEFAULT_VENDOR,
+  canViewAuditRole,
+  findOperator,
+  findVendor,
+  getOperators,
+} from '../config/tenants'
 import * as api from '../api/client'
-
-// ── Types ─────────────────────────────────────────────────
-type TabId = 'dashboard' | 'copilot' | 'proposals' | 'users' | 'audit' | 'settings'
+import { mapApiAuditEvent, mapApiMessage, mapApiProposal, mapMessageContent, tempId } from '../lib/mappers'
 
 interface StoreState {
-  // Auth context
+  // Auth context (header stubs → backend)
   vendor: Vendor
   operator: VendorUser
-  activeTab: TabId
+  verifiedContext: api.VendorContextResponse | null
 
   // Backend connectivity
   backendOnline: boolean
   backendStatus: api.HealthResponse | null
+  lastError: string | null
 
-  // Data
+  // Data from API
   proposals: Proposal[]
+  proposalsLoading: boolean
   auditEvents: AuditEvent[]
+  auditLoading: boolean
+  auditForbidden: boolean
 
   // Chat
   sessions: Record<string, ChatMessage[]>
+  sessionOrder: string[]
   activeSessionId: string
   chatLoading: boolean
 
   // Actions
-  setTab: (tab: TabId) => void
+  clearError: () => void
   setRole: (role: Role) => void
   setVendor: (vendorId: string) => void
-  newSession: () => Promise<string>
-  switchSession: (id: string) => void
-  sendMessage: (text: string) => Promise<void>
-  decideProposal: (id: string, decision: 'approve' | 'reject', reason?: string) => Promise<void>
   checkBackend: () => Promise<void>
+  refreshAll: () => Promise<void>
   fetchProposals: () => Promise<void>
   fetchAudit: () => Promise<void>
+  newSession: () => Promise<string>
+  switchSession: (id: string) => Promise<void>
+  loadSessionMessages: (sessionId: string) => Promise<void>
+  sendMessage: (text: string) => Promise<void>
+  decideProposal: (id: string, decision: 'approve' | 'reject', reason?: string) => Promise<void>
+  reseed: () => Promise<void>
 }
 
-// ── Sync auth headers whenever vendor/operator changes ────
 function syncAuthHeaders(vendor: Vendor, operator: VendorUser) {
   api.setAuthHeaders({
     'x-vendor-id': vendor.id,
@@ -51,153 +59,222 @@ function syncAuthHeaders(vendor: Vendor, operator: VendorUser) {
   })
 }
 
-// ── Store ─────────────────────────────────────────────────
+function errMessage(err: unknown): string {
+  if (err instanceof api.ApiError) return err.message
+  if (err instanceof Error) return err.message
+  return String(err)
+}
+
 export const useStore = create<StoreState>((set, get) => {
-  // Initialize auth headers
-  syncAuthHeaders(vendors[0], operatorsByVendor.v_acme[0])
+  syncAuthHeaders(DEFAULT_VENDOR, DEFAULT_OPERATOR)
 
   return {
-    vendor: vendors[0],
-    operator: operatorsByVendor.v_acme[0],
-    activeTab: 'dashboard',
+    vendor: DEFAULT_VENDOR,
+    operator: DEFAULT_OPERATOR,
+    verifiedContext: null,
 
     backendOnline: false,
     backendStatus: null,
+    lastError: null,
 
-
-    
-    // API backed data (Proposals, Audit, Chat)
     proposals: [],
+    proposalsLoading: false,
     auditEvents: [],
+    auditLoading: false,
+    auditForbidden: false,
+
     sessions: {},
+    sessionOrder: [],
     activeSessionId: '',
     chatLoading: false,
 
-    // ── Tab Navigation ──────────────────────────────────────
-    setTab: (tab) => set({ activeTab: tab }),
+    clearError: () => set({ lastError: null }),
 
-    // ── Check Backend Health ────────────────────────────────
     checkBackend: async () => {
       try {
         const health = await api.checkHealth()
-        set({ backendOnline: true, backendStatus: health })
-        // Auto-fetch real data when backend comes online
-        const s = get()
-        s.fetchProposals()
-        s.fetchAudit()
-      } catch {
-        set({ backendOnline: false, backendStatus: null })
+        set({ backendOnline: true, backendStatus: health, lastError: null })
+        await get().refreshAll()
+      } catch (err) {
+        set({
+          backendOnline: false,
+          backendStatus: null,
+          verifiedContext: null,
+          lastError: errMessage(err),
+        })
       }
     },
 
-    // ── Switch Role ─────────────────────────────────────────
+    refreshAll: async () => {
+      if (!get().backendOnline) return
+      try {
+        const me = await api.whoami()
+        set({ verifiedContext: me })
+      } catch (err) {
+        // Auth headers invalid for current identity
+        set({ verifiedContext: null, lastError: errMessage(err) })
+        return
+      }
+      await Promise.all([get().fetchProposals(), get().fetchAudit()])
+    },
+
     setRole: (role) => {
       const { vendor } = get()
-      const ops = operatorsByVendor[vendor.id] || []
-      const op = ops.find(o => o.role === role) || {
-        id: `vu_${vendor.id}_${role}`,
-        email: `${role}@${vendor.id}.com`,
-        role,
-        displayName: `${role.charAt(0).toUpperCase() + role.slice(1)} (Simulated)`,
+      const op = findOperator(vendor.id, role)
+      if (!op) {
+        set({
+          lastError: `No seeded user with role "${role}" for ${vendor.id}. Use admin, support, or viewer.`,
+        })
+        return
       }
       syncAuthHeaders(vendor, op)
-      set({ operator: op })
-
-      // Re-fetch data with new auth
-      if (get().backendOnline) {
-        get().fetchProposals()
-        get().fetchAudit()
-      }
+      // Clear chat sessions when identity changes (scoped per operator on server)
+      set({
+        operator: op,
+        sessions: {},
+        sessionOrder: [],
+        activeSessionId: '',
+        lastError: null,
+        verifiedContext: null,
+      })
+      if (get().backendOnline) void get().refreshAll()
     },
 
-    // ── Switch Vendor ───────────────────────────────────────
     setVendor: (vendorId) => {
-      const v = vendors.find(v => v.id === vendorId) || vendors[0]
-      const ops = operatorsByVendor[vendorId] || []
-      const op = ops[0] || { id: `vu_${vendorId}_owner`, email: `owner@${vendorId}.com`, role: 'owner' as Role, displayName: 'Default Owner' }
+      const v = findVendor(vendorId)
+      const ops = getOperators(vendorId)
+      const op = ops[0] ?? DEFAULT_OPERATOR
       syncAuthHeaders(v, op)
-      set({ vendor: v, operator: op })
-
-      // Re-fetch data with new auth
-      if (get().backendOnline) {
-        get().fetchProposals()
-        get().fetchAudit()
-      }
+      set({
+        vendor: v,
+        operator: op,
+        sessions: {},
+        sessionOrder: [],
+        activeSessionId: '',
+        lastError: null,
+        verifiedContext: null,
+        proposals: [],
+        auditEvents: [],
+      })
+      if (get().backendOnline) void get().refreshAll()
     },
 
-    // ── Fetch Proposals from Backend ────────────────────────
     fetchProposals: async () => {
       if (!get().backendOnline) return
+      set({ proposalsLoading: true })
       try {
         const { proposals } = await api.listProposals()
         set({
           proposals: proposals.map(mapApiProposal),
+          proposalsLoading: false,
+          lastError: null,
         })
       } catch (err) {
-        console.warn('[HobbyFi] Failed to fetch proposals:', err)
+        set({ proposalsLoading: false, lastError: errMessage(err) })
       }
     },
 
-    // ── Fetch Audit from Backend ────────────────────────────
     fetchAudit: async () => {
       if (!get().backendOnline) return
+      const { operator } = get()
+      if (!canViewAuditRole(operator.role)) {
+        set({ auditEvents: [], auditForbidden: true, auditLoading: false })
+        return
+      }
+      set({ auditLoading: true, auditForbidden: false })
       try {
         const { events } = await api.listAudit(200)
         set({
           auditEvents: events.map(mapApiAuditEvent),
+          auditLoading: false,
+          auditForbidden: false,
+          lastError: null,
         })
       } catch (err) {
-        console.warn('[HobbyFi] Failed to fetch audit:', err)
+        const status = err instanceof api.ApiError ? err.status : 0
+        set({
+          auditLoading: false,
+          auditForbidden: status === 403,
+          auditEvents: status === 403 ? [] : get().auditEvents,
+          lastError: status === 403 ? null : errMessage(err),
+        })
       }
     },
 
-    // ── Chat Session Management ─────────────────────────────
     newSession: async () => {
       if (!get().backendOnline) throw new Error('Backend is offline')
-      
       const session = await api.createSession()
-      const welcomeMsg: ChatMessage = {
-        id: newId('m'),
+      const welcome: ChatMessage = {
+        id: tempId('m'),
         role: 'assistant',
-        content: { text: 'New session opened. How can I help you manage your memberships today?' },
+        content: {
+          text:
+            'Session ready. Ask about users, trials, revenue, or propose a membership change. ' +
+            'Writes create pending proposals — nothing mutates until you approve.',
+        },
         createdAt: session.created_at,
       }
-      set(s => ({
+      set((s) => ({
         activeSessionId: session.id,
-        sessions: { ...s.sessions, [session.id]: [welcomeMsg] },
+        sessions: { ...s.sessions, [session.id]: [welcome] },
+        sessionOrder: [session.id, ...s.sessionOrder.filter((id) => id !== session.id)],
+        lastError: null,
       }))
       return session.id
     },
 
-    switchSession: (id) => {
-      if (get().sessions[id]) set({ activeSessionId: id })
+    loadSessionMessages: async (sessionId) => {
+      if (!get().backendOnline) return
+      try {
+        const { messages } = await api.listMessages(sessionId)
+        const mapped = messages
+          .map(mapApiMessage)
+          .filter((m): m is ChatMessage => m !== null)
+        set((s) => ({
+          sessions: { ...s.sessions, [sessionId]: mapped },
+        }))
+      } catch (err) {
+        set({ lastError: errMessage(err) })
+      }
     },
 
-    // ── Send Copilot Message ────────────────────────────────
+    switchSession: async (id) => {
+      set({ activeSessionId: id })
+      if (!get().sessions[id]?.length && get().backendOnline) {
+        await get().loadSessionMessages(id)
+      }
+    },
+
     sendMessage: async (text) => {
       let { activeSessionId, sessions, backendOnline } = get()
 
-      // Auto-create session if none exists
+      if (!backendOnline) {
+        set({ lastError: 'Backend is offline. Start the API and click Reconnect.' })
+        return
+      }
+
       if (!activeSessionId) {
         try {
           activeSessionId = await get().newSession()
           sessions = get().sessions
         } catch (err) {
-          activeSessionId = newId('cs')
+          set({ lastError: errMessage(err) })
+          return
         }
       }
 
       const history = sessions[activeSessionId] || []
+      const userTempId = tempId('m')
+      const botTempId = tempId('m')
+
       const userMsg: ChatMessage = {
-        id: newId('m'),
+        id: userTempId,
         role: 'user',
         content: { text },
         createdAt: new Date().toISOString(),
       }
-
-      const botId = newId('m')
       const botMsg: ChatMessage = {
-        id: botId,
+        id: botTempId,
         role: 'assistant',
         content: { text: '' },
         createdAt: new Date().toISOString(),
@@ -208,24 +285,32 @@ export const useStore = create<StoreState>((set, get) => {
       set({
         activeSessionId,
         chatLoading: true,
-        sessions: { ...sessions, [activeSessionId]: [...history, userMsg, botMsg] },
+        lastError: null,
+        sessions: {
+          ...get().sessions,
+          [activeSessionId]: [...history, userMsg, botMsg],
+        },
       })
 
-      if (!backendOnline) {
-        set(s => {
-          const msgs = [...s.sessions[activeSessionId]]
-          const idx = msgs.findIndex(m => m.id === botId)
-          if (idx !== -1) {
-            msgs[idx] = {
-              ...msgs[idx],
-              content: { text: '', error: 'Backend is offline. Please start the API server.' },
-              streaming: false,
-              currentPhase: undefined,
-            }
-          }
-          return { chatLoading: false, sessions: { ...s.sessions, [activeSessionId]: msgs } }
+      const patchBot = (patch: Partial<ChatMessage>) => {
+        set((s) => {
+          const msgs = [...(s.sessions[activeSessionId] || [])]
+          const idx = msgs.findIndex((m) => m.id === botTempId || m.id === patch.id)
+          // Prefer finding by botTempId first, then by current streaming bot
+          const byTemp = msgs.findIndex((m) => m.id === botTempId)
+          const i = byTemp !== -1 ? byTemp : idx
+          if (i !== -1) msgs[i] = { ...msgs[i], ...patch }
+          return { sessions: { ...s.sessions, [activeSessionId]: msgs } }
         })
-        return
+      }
+
+      const patchUserId = (realId: string) => {
+        set((s) => {
+          const msgs = [...(s.sessions[activeSessionId] || [])]
+          const i = msgs.findIndex((m) => m.id === userTempId)
+          if (i !== -1) msgs[i] = { ...msgs[i], id: realId }
+          return { sessions: { ...s.sessions, [activeSessionId]: msgs } }
+        })
       }
 
       try {
@@ -233,115 +318,98 @@ export const useStore = create<StoreState>((set, get) => {
 
         for await (const { event, data } of stream) {
           if (event === 'status') {
-            updateBotPhase(set, activeSessionId, botId, data.phase)
+            patchBot({ currentPhase: String((data as { phase?: string }).phase || 'running') })
           } else if (event === 'result') {
-            // Build content from backend response
-            const content: ChatMessage['content'] = {
-              text: data.text || '',
-              blocks: data.blocks || [],
+            const d = data as {
+              text?: string
+              blocks?: unknown[]
+              tool_traces?: unknown[]
+              user_message_id?: string
+              assistant_message_id?: string
             }
-            set(s => {
-              const msgs = [...s.sessions[activeSessionId]]
-              const idx = msgs.findIndex(m => m.id === botId)
-              if (idx !== -1) {
-                msgs[idx] = {
-                  ...msgs[idx],
-                  id: data.assistant_message_id || botId,
-                  content,
-                  streaming: false,
-                  currentPhase: undefined,
-                }
-              }
-              // Update user msg ID from backend
-              const userIdx = msgs.findIndex(m => m.id === userMsg.id)
-              if (userIdx !== -1 && data.user_message_id) {
-                msgs[userIdx] = { ...msgs[userIdx], id: data.user_message_id }
-              }
-              return { sessions: { ...s.sessions, [activeSessionId]: msgs } }
+            const content = mapMessageContent({
+              text: d.text || '',
+              blocks: d.blocks || [],
+              tool_traces: d.tool_traces || [],
             })
+            patchBot({
+              id: d.assistant_message_id || botTempId,
+              content,
+              streaming: false,
+              currentPhase: undefined,
+            })
+            if (d.user_message_id) patchUserId(d.user_message_id)
           } else if (event === 'done') {
-            // Refresh proposals (copilot may have created new ones)
-            get().fetchProposals()
-            get().fetchAudit()
+            void get().fetchProposals()
+            void get().fetchAudit()
           }
         }
         set({ chatLoading: false })
-      } catch (err: any) {
-        console.warn('[HobbyFi] SSE failed:', err)
-        set(s => {
-          const msgs = [...s.sessions[activeSessionId]]
-          const idx = msgs.findIndex(m => m.id === botId)
-          if (idx !== -1) {
-            msgs[idx] = {
-              ...msgs[idx],
-              content: { text: '', error: err.message || 'API Error' },
-              streaming: false,
-              currentPhase: undefined,
+      } catch (err) {
+        // Fallback: non-stream POST if SSE fails (some proxies break streams)
+        try {
+          const turn = await api.sendMessage(activeSessionId, text)
+          const content = mapMessageContent(
+            (turn.assistant_message.content || {}) as Record<string, unknown>,
+          )
+          set((s) => {
+            const msgs = [...(s.sessions[activeSessionId] || [])]
+            const botIdx = msgs.findIndex((m) => m.id === botTempId)
+            const userIdx = msgs.findIndex((m) => m.id === userTempId)
+            if (userIdx !== -1) {
+              msgs[userIdx] = {
+                ...msgs[userIdx],
+                id: turn.user_message.id,
+                createdAt: turn.user_message.created_at,
+              }
             }
-          }
-          return { chatLoading: false, sessions: { ...s.sessions, [activeSessionId]: msgs } }
-        })
+            if (botIdx !== -1) {
+              msgs[botIdx] = {
+                id: turn.assistant_message.id,
+                role: 'assistant',
+                content,
+                createdAt: turn.assistant_message.created_at,
+                streaming: false,
+              }
+            }
+            return {
+              chatLoading: false,
+              sessions: { ...s.sessions, [activeSessionId]: msgs },
+            }
+          })
+          void get().fetchProposals()
+          void get().fetchAudit()
+        } catch (fallbackErr) {
+          patchBot({
+            content: {
+              text: '',
+              error: errMessage(fallbackErr),
+            },
+            streaming: false,
+            currentPhase: undefined,
+          })
+          set({ chatLoading: false, lastError: errMessage(fallbackErr) })
+        }
       }
     },
 
-    // ── Decide Proposal ─────────────────────────────────────
     decideProposal: async (id, decision, reason) => {
       if (!get().backendOnline) throw new Error('Backend is offline')
-
       try {
         await api.decideProposal(id, decision, reason)
         await Promise.all([get().fetchProposals(), get().fetchAudit()])
+        set({ lastError: null })
       } catch (err) {
-        console.error('[HobbyFi] Proposal decision failed:', err)
+        set({ lastError: errMessage(err) })
         throw err
       }
     },
+
+    reseed: async () => {
+      if (!get().backendOnline) throw new Error('Backend is offline')
+      await api.reseedData()
+      set({ sessions: {}, sessionOrder: [], activeSessionId: '' })
+      await get().refreshAll()
+    },
   }
 })
-
-// ── Map API Response → Frontend Model ─────────────────────
-function mapApiProposal(p: api.ProposalResponse): Proposal {
-  return {
-    id: p.id,
-    vendorId: p.vendor_id,
-    sessionId: p.session_id || '',
-    messageId: p.message_id || '',
-    proposedBy: p.proposed_by,
-    actionType: p.action_type as any,
-    payload: p.payload,
-    preview: {
-      before: p.preview?.before || {},
-      after: p.preview?.after || {},
-      ...p.preview,
-    },
-    status: p.status as any,
-    createdAt: p.created_at,
-    expiresAt: p.expires_at,
-    decidedBy: p.decided_by || undefined,
-    decidedAt: p.decided_at || undefined,
-    executionResult: p.execution_result || undefined,
-  }
-}
-
-function mapApiAuditEvent(e: api.AuditEventResponse): AuditEvent {
-  return {
-    id: e.id,
-    vendorId: e.vendor_id,
-    actorId: e.actor_id || null,
-    eventType: e.event_type,
-    entityType: e.entity_type || '',
-    entityId: e.entity_id || '',
-    metadata: e.metadata,
-    createdAt: e.created_at,
-  }
-}
-
-// ── Helpers ───────────────────────────────────────────────
-function updateBotPhase(set: any, sessionId: string, botId: string, phase: string) {
-  set((s: StoreState) => {
-    const msgs = [...s.sessions[sessionId]]
-    const idx = msgs.findIndex(m => m.id === botId)
-    if (idx !== -1) msgs[idx] = { ...msgs[idx], currentPhase: phase }
-    return { sessions: { ...s.sessions, [sessionId]: msgs } }
-  })
-}
