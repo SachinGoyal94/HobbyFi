@@ -76,3 +76,9 @@ apps/frontend/.vite/
 apps/frontend/.turbo/
 apps/frontend/*.local
 
+
+# Python venv
+apps/copilot-api/Lib/
+apps/copilot-api/Include/
+apps/copilot-api/Scripts/
+apps/copilot-api/pyvenv.cfg
