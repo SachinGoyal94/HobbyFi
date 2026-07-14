@@ -9,6 +9,14 @@
 
 ---
 
+## 🚀 Live Demo & Links
+
+* **Live Frontend Web App:** [https://hobby-fi-phi.vercel.app](https://hobby-fi-phi.vercel.app)
+* **Live Backend API:** [https://hobbifycopilot-gvdwcng5dee3hga0.koreacentral-01.azurewebsites.net/v1/health](https://hobbifycopilot-gvdwcng5dee3hga0.koreacentral-01.azurewebsites.net/v1/health)
+* **Video Demo Folder:** [Google Drive Video Demos](https://drive.google.com/drive/folders/1MkHqi9f_i6g8o6QliUKLhyO6e9BYqdTu?usp=sharing)
+
+---
+
 ## What It Does
 
 | Capability | Example | Safety Model |
