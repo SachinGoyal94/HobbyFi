@@ -30,16 +30,19 @@ jobs:
           source antenv/bin/activate
           pip install -r apps/copilot-api/requirements.txt
 
-      # Upload only the copilot-api app directory for deployment.
-      # Oryx will run pip install on the server using the requirements.txt at the root
-      # of the uploaded artifact, so we include it alongside the app code.
+      # Stage a flat deployment directory with requirements.txt and app/ at the root.
+      # Azure Oryx expects this layout to auto-install dependencies.
+      - name: Prepare deployment artifact
+        run: |
+          mkdir -p deploy
+          cp apps/copilot-api/requirements.txt deploy/requirements.txt
+          cp -r apps/copilot-api/app deploy/app
+
       - name: Upload artifact for deployment jobs
         uses: actions/upload-artifact@v4
         with:
           name: python-app
-          path: |
-            apps/copilot-api/app/
-            apps/copilot-api/requirements.txt
+          path: deploy/
 
   deploy:
     runs-on: ubuntu-latest
@@ -53,14 +56,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: python-app
-
-      # Restructure the artifact so requirements.txt and app/ are at the root
-      # This is needed because Azure Oryx expects requirements.txt at the root
-      - name: Restructure for Azure deployment
-        run: |
-          mv apps/copilot-api/requirements.txt ./requirements.txt
-          mv apps/copilot-api/app ./app
-          rm -rf apps
 
       - name: Login to Azure
         uses: azure/login@v2
